@@ -1,0 +1,7 @@
+// expect-exit: 0
+// expect-output: 5000
+// expect-errors: 
+int down(int n) {
+    return n == 0 ? 0 : 1 + down(n - 1);
+}
+print(down(5000));

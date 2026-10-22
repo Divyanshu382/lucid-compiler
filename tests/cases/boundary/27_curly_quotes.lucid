@@ -1,0 +1,5 @@
+// expect-exit: 0
+// expect-output: hi there
+// expect-errors: 
+string s = “hi there”;
+print(s);

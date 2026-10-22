@@ -1,0 +1,7 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: runtime:RuntimeError
+string s = "x";
+while (true) {
+    s = s + s;       // would need terabytes of memory
+}

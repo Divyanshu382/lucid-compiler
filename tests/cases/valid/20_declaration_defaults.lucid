@@ -1,0 +1,7 @@
+// expect-exit: 0
+// expect-output: 0 ! false
+// expect-errors: 
+int n;            // 0
+string s;         // empty
+bool b;           // false
+print(n, s + "!", b);

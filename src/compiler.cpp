@@ -14,6 +14,7 @@
 #include "optimizer.hpp"
 #include "ircode.hpp"
 #include "interpreter.hpp"
+#include "bigstack.hpp"
 
 #include <chrono>
 
@@ -27,7 +28,12 @@ double micros(std::chrono::steady_clock::time_point start) {
 }
 } // namespace
 
-nlohmann::json compile(const std::string& source) {
+// Deeper trees than this are rejected before any phase walks them: a long
+// enough chain such as 1 + 1 + 1 + ... builds a tree this deep without any
+// brackets. No real program comes close.
+static constexpr int kMaxTreeDepth = 2000;
+
+static nlohmann::json compileImpl(const std::string& source) {
     using nlohmann::json;
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
@@ -66,6 +72,15 @@ nlohmann::json compile(const std::string& source) {
     Parser parser(tokens, source, errors);
     std::unique_ptr<Program> program = parser.parse();
     timings["parser"] = micros(ts);
+    int deepestLine = 0;
+    if (treeDepth(*program, deepestLine) > kMaxTreeDepth) {
+        errors.add("syntax", "TooDeeplyNested",
+                   "This code is nested more than " + std::to_string(kMaxTreeDepth) +
+                   " levels deep, for example a very long chain of operators. "
+                   "Split it into smaller statements.",
+                   deepestLine, 0, sourceLine(source, deepestLine));
+        return finish();
+    }
     result["ast"] = program->toJson();
     if (!errors.empty()) return finish();
 
@@ -114,6 +129,20 @@ nlohmann::json compile(const std::string& source) {
 
     result["success"] = errors.empty();
     return finish();
+}
+
+nlohmann::json compile(const std::string& source) {
+    nlohmann::json result;
+    runOnLargeStack([&] { result = compileImpl(source); });
+    return result;
+}
+
+std::string compileToJsonText(const std::string& source) {
+    std::string text;
+    runOnLargeStack([&] {
+        text = compileImpl(source).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    });
+    return text;
 }
 
 } // namespace lucid

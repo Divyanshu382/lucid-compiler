@@ -1,0 +1,8 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:TypeMismatch | semantic:UndeclaredVariable
+// everything inside a for-loop must be type-checked
+for (int i = 0; i < 3; i++) {
+    string s = i;
+    print(undefinedThing);
+}

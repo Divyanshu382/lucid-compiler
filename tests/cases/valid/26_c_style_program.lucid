@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-output: result: 5
+// expect-errors: 
+int add(int, int);          // prototypes are accepted
+void show(int n);
+
+int main(void) {            // main() runs automatically
+    show(add(2, 3));
+    return 0;
+}
+
+int add(int a, int b) { return a + b; }
+void show(int n) { print("result:", n); }

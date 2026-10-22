@@ -23,4 +23,8 @@ namespace lucid {
 // ordinary program errors — those live in the "errors" array).
 nlohmann::json compile(const std::string& source);
 
+// compile() serialised to JSON text, with the serialisation also done on the
+// large stack (the JSON writer is recursive too). Used by the server.
+std::string compileToJsonText(const std::string& source);
+
 } // namespace lucid

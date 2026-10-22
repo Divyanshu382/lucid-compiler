@@ -1,0 +1,4 @@
+// expect-exit: 0
+// expect-output: 7
+// expect-errors: 
+int x=5;if(x>3){x+=2;}print(x);

@@ -1,0 +1,6 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: lexical:UnterminatedComment
+int x = 5;
+/* never closed
+print(x);

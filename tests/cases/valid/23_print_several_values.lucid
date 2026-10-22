@@ -1,0 +1,5 @@
+// expect-exit: 0
+// expect-output: x = 3 and true
+// expect-errors: 
+int x = 3;
+print("x =", x, "and", true);

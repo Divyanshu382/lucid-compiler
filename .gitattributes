@@ -2,3 +2,5 @@
 *.bat text eol=crlf
 *.exe binary
 *.sh  text eol=lf
+# Keeps its Windows (CRLF) line endings on every machine: it tests them.
+tests/cases/**/*crlf*.lucid -text

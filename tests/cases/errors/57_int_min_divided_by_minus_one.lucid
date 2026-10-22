@@ -1,0 +1,5 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: runtime:RuntimeError
+int low = -2147483647 - 1;
+print(low / -1);     // crashes a native C++ program on x86

@@ -16,6 +16,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "ast.hpp"
 #include "../third_party/json.hpp"
@@ -40,6 +41,20 @@ private:
     std::vector<Quad> code_;
     int temps_ = 0;
     int labels_ = 0;
+
+    // Jump targets of the enclosing loops: `continue` goes to the first label,
+    // `break` to the second.
+    struct LoopLabels { std::string continueTo, breakTo; };
+    std::vector<LoopLabels> loops_;
+
+    // Scopes, mirroring the semantic analyser. A declaration that hides a
+    // variable from an enclosing scope gets a distinct IR name (x, x.1, ...)
+    // so the two variables never share storage in the three-address code;
+    // so does a variable spelled like a temporary (t0 becomes t0.1).
+    std::vector<std::unordered_map<std::string, std::string>> scopes_;
+    std::unordered_map<std::string, int> renames_;
+    std::string declareName(const std::string& name);   // IR name for a new variable
+    std::string resolveName(const std::string& name) const;
 
     std::string newTemp()  { return "t" + std::to_string(temps_++); }
     std::string newLabel() { return "L" + std::to_string(labels_++); }

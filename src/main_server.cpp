@@ -93,28 +93,31 @@ int main(int argc, char** argv) {
 
     // POST /compile { "source": "..." } -> full compiler result JSON.
     server.Post("/compile", [](const httplib::Request& req, httplib::Response& res) {
-        nlohmann::json out;
+        std::string source;
         try {
-            auto body = nlohmann::json::parse(req.body);
-            std::string source = body.value("source", "");
-            out = lucid::compile(source);
+            source = nlohmann::json::parse(req.body).value("source", "");
+        } catch (const std::exception&) {
+            res.status = 400;
+            res.set_content(R"({"error":{"code":400,"message":"Body must be JSON: { \"source\": \"...\" }"}})",
+                            "application/json");
+            return;
+        }
+        // Compiles and serialises on a large-stack thread (bigstack.hpp), so
+        // deep recursion in the user's program cannot overflow this server
+        // thread's small stack. A compiler failure becomes a clean error.
+        try {
+            res.set_content(lucid::compileToJsonText(source), "application/json");
         } catch (const std::exception& e) {
-            // A compiler crash or bad request returns a clean error, never a 500 kill.
-            out = {
-                {"tokens", nlohmann::json::array()},
-                {"ast", nullptr},
-                {"symbolTable", nullptr},
-                {"optimized", nullptr},
-                {"output", nlohmann::json::array()},
-                {"success", false},
+            nlohmann::json out = {
+                {"tokens", nlohmann::json::array()}, {"ast", nullptr}, {"symbolTable", nullptr},
+                {"optimized", nullptr}, {"output", nlohmann::json::array()}, {"success", false},
                 {"errors", nlohmann::json::array({{
                     {"phase", "server"}, {"type", "InternalError"},
                     {"message", std::string("Compiler failure: ") + e.what()},
-                    {"line", 0}, {"col", 0}, {"snippet", ""}
-                }})}
-            };
+                    {"line", 0}, {"col", 0}, {"snippet", ""}}})}};
+            res.set_content(out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),
+                            "application/json");
         }
-        res.set_content(out.dump(), "application/json");
     });
 
     // ---- AI relay -----------------------------------------------------------
@@ -158,6 +161,18 @@ int main(int argc, char** argv) {
 
         res.status = reply.status;
         res.set_content(reply.body, "application/json");
+    });
+
+    // Last line of defence: any exception in a handler becomes a JSON 500,
+    // never a crashed server.
+    server.set_exception_handler([](const httplib::Request&, httplib::Response& res, std::exception_ptr ep) {
+        std::string what = "unknown error";
+        try { if (ep) std::rethrow_exception(ep); }
+        catch (const std::exception& e) { what = e.what(); }
+        catch (...) {}
+        res.status = 500;
+        nlohmann::json j = {{"error", {{"code", 500}, {"message", "Server error: " + what}}}};
+        res.set_content(j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), "application/json");
     });
 
     // Simple health check.

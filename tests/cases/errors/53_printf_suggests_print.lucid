@@ -1,0 +1,4 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:UndefinedFunction
+printf("hello");

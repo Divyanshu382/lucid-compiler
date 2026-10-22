@@ -1,0 +1,7 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:ContinueOutsideLoop
+func f(): void {
+    continue;      // not inside a loop of its own
+}
+while (true) { f(); break; }

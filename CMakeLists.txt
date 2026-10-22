@@ -27,8 +27,11 @@ add_library(lucid_core STATIC
     src/ircode.cpp
     src/interpreter.cpp
     src/compiler.cpp
+    src/bigstack.cpp
 )
 target_include_directories(lucid_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+find_package(Threads REQUIRED)
+target_link_libraries(lucid_core PUBLIC Threads::Threads)   # bigstack.cpp
 
 # --- CLI ---
 add_executable(lucidc src/main_cli.cpp)

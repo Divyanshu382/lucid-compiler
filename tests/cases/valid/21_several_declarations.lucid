@@ -1,0 +1,5 @@
+// expect-exit: 0
+// expect-output: 1 2 6
+// expect-errors: 
+int a = 1, b = 2, c = b * 3;
+print(a, b, c);

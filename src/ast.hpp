@@ -20,7 +20,8 @@ namespace lucid {
 enum class NodeKind {
     Program, Block,
     VarDecl, Assign, If, While, Print, FuncDecl, Return,
-    Call, BinaryOp, UnaryOp,
+    Break, Continue,
+    Call, BinaryOp, UnaryOp, Conditional,
     Identifier, IntLiteral, StringLiteral, BoolLiteral
 };
 
@@ -35,6 +36,9 @@ inline const char* nodeKindName(NodeKind k) {
         case NodeKind::Print:         return "Print";
         case NodeKind::FuncDecl:      return "FuncDecl";
         case NodeKind::Return:        return "Return";
+        case NodeKind::Break:         return "Break";
+        case NodeKind::Continue:      return "Continue";
+        case NodeKind::Conditional:   return "Conditional";
         case NodeKind::Call:          return "Call";
         case NodeKind::BinaryOp:      return "BinaryOp";
         case NodeKind::UnaryOp:       return "UnaryOp";
@@ -85,6 +89,7 @@ struct Program : Node {
 
 struct Block : Node {
     std::vector<NodePtr> statements;
+    std::string scopeLabel = "block";   // shown in the symbol table ("for", "block", ...)
     explicit Block(int ln) : Node(NodeKind::Block, ln) {}
     nlohmann::json toJson() const override {
         auto j = nodeBase(kind, "Block", line);
@@ -125,30 +130,37 @@ struct If : Node {
     nlohmann::json toJson() const override {
         auto j = nodeBase(kind, "If", line);
         if (cond)      j["children"].push_back(cond->toJson());
-        if (thenBlock) { auto t = thenBlock->toJson(); t["label"] = "then"; j["children"].push_back(t); }
-        if (elseBlock) { auto e = elseBlock->toJson(); e["label"] = "else"; j["children"].push_back(e); }
+        if (thenBlock) { auto t = thenBlock->toJson(); t["label"] = "then"; j["children"].push_back(std::move(t)); }
+        if (elseBlock) { auto e = elseBlock->toJson(); e["label"] = "else"; j["children"].push_back(std::move(e)); }
         return j;
     }
 };
 
+// Also represents `do { } while (c);` (doWhile = true: the body runs before
+// the first test) and `for` loops, whose update part is kept in `step` so that
+// `continue` still runs it before the next test.
 struct While : Node {
     NodePtr cond;
     std::unique_ptr<Block> body;
+    NodePtr step;            // for-loop update (e.g. i = i + 1); may be null
+    bool doWhile = false;
     explicit While(int ln) : Node(NodeKind::While, ln) {}
     nlohmann::json toJson() const override {
-        auto j = nodeBase(kind, "While", line);
+        auto j = nodeBase(kind, doWhile ? "DoWhile" : "While", line);
         if (cond) j["children"].push_back(cond->toJson());
-        if (body) { auto b = body->toJson(); b["label"] = "body"; j["children"].push_back(b); }
+        if (body) { auto b = body->toJson(); b["label"] = "body"; j["children"].push_back(std::move(b)); }
+        if (step) j["children"].push_back(step->toJson());
         return j;
     }
 };
 
+// print(a, b, ...) prints its values on one line, separated by spaces.
 struct Print : Node {
-    NodePtr expr;
+    std::vector<NodePtr> args;
     explicit Print(int ln) : Node(NodeKind::Print, ln) {}
     nlohmann::json toJson() const override {
         auto j = nodeBase(kind, "Print", line);
-        if (expr) j["children"].push_back(expr->toJson());
+        for (const auto& a : args) j["children"].push_back(a->toJson());
         return j;
     }
 };
@@ -170,13 +182,13 @@ struct FuncDecl : Node {
     }
     nlohmann::json toJson() const override {
         auto j = nodeBase(kind, "func " + signature(), line);
-        if (body) { auto b = body->toJson(); b["label"] = "body"; j["children"].push_back(b); }
+        if (body) { auto b = body->toJson(); b["label"] = "body"; j["children"].push_back(std::move(b)); }
         return j;
     }
 };
 
 struct Return : Node {
-    NodePtr value;   // required in Lucid (every function returns a value)
+    NodePtr value;   // null for a bare `return;` (void functions)
     explicit Return(int ln) : Node(NodeKind::Return, ln) {}
     nlohmann::json toJson() const override {
         auto j = nodeBase(kind, "Return", line);
@@ -185,7 +197,30 @@ struct Return : Node {
     }
 };
 
+struct Break : Node {
+    explicit Break(int ln) : Node(NodeKind::Break, ln) {}
+    nlohmann::json toJson() const override { return nodeBase(kind, "Break", line); }
+};
+
+struct Continue : Node {
+    explicit Continue(int ln) : Node(NodeKind::Continue, ln) {}
+    nlohmann::json toJson() const override { return nodeBase(kind, "Continue", line); }
+};
+
 // ---- Expressions ---------------------------------------------------------
+// cond ? thenExpr : elseExpr
+struct Conditional : Node {
+    NodePtr cond, thenExpr, elseExpr;
+    explicit Conditional(int ln) : Node(NodeKind::Conditional, ln) {}
+    nlohmann::json toJson() const override {
+        auto j = nodeBase(kind, "?:", line);
+        if (cond)     j["children"].push_back(cond->toJson());
+        if (thenExpr) j["children"].push_back(thenExpr->toJson());
+        if (elseExpr) j["children"].push_back(elseExpr->toJson());
+        return j;
+    }
+};
+
 struct Call : Node {
     std::string callee;
     std::vector<NodePtr> args;
@@ -251,6 +286,73 @@ struct BoolLiteral : Node {
         return nodeBase(kind, value ? "true" : "false", line);
     }
 };
+
+// A C-style program puts its code in main(). If the program declares a
+// parameterless main() and has no top-level code other than declarations,
+// main() is run automatically, as in C. Shared by the interpreter and the
+// intermediate-code generator so both agree.
+inline bool runsMainAutomatically(const Program& program) {
+    bool hasMain = false;
+    for (const auto& s : program.statements) {
+        if (s->kind == NodeKind::FuncDecl) {
+            auto* f = static_cast<const FuncDecl*>(s.get());
+            if (f->name == "main" && f->params.empty()) hasMain = true;
+        } else if (s->kind != NodeKind::VarDecl) {
+            return false;   // the program has its own top-level code
+        }
+    }
+    return hasMain;
+}
+
+// The children of any node, for code that walks the tree without recursion.
+inline std::vector<const Node*> childrenOf(const Node& n) {
+    std::vector<const Node*> out;
+    auto add = [&](const Node* c) { if (c) out.push_back(c); };
+    switch (n.kind) {
+        case NodeKind::Program:  for (auto& s : static_cast<const Program&>(n).statements) add(s.get()); break;
+        case NodeKind::Block:    for (auto& s : static_cast<const Block&>(n).statements) add(s.get()); break;
+        case NodeKind::VarDecl:  add(static_cast<const VarDecl&>(n).init.get()); break;
+        case NodeKind::Assign:   add(static_cast<const Assign&>(n).value.get()); break;
+        case NodeKind::If: {
+            auto& i = static_cast<const If&>(n);
+            add(i.cond.get()); add(i.thenBlock.get()); add(i.elseBlock.get()); break;
+        }
+        case NodeKind::While: {
+            auto& w = static_cast<const While&>(n);
+            add(w.cond.get()); add(w.body.get()); add(w.step.get()); break;
+        }
+        case NodeKind::Print:    for (auto& a : static_cast<const Print&>(n).args) add(a.get()); break;
+        case NodeKind::FuncDecl: add(static_cast<const FuncDecl&>(n).body.get()); break;
+        case NodeKind::Return:   add(static_cast<const Return&>(n).value.get()); break;
+        case NodeKind::Call:     for (auto& a : static_cast<const Call&>(n).args) add(a.get()); break;
+        case NodeKind::BinaryOp: {
+            auto& b = static_cast<const BinaryOp&>(n);
+            add(b.left.get()); add(b.right.get()); break;
+        }
+        case NodeKind::UnaryOp:  add(static_cast<const UnaryOp&>(n).operand.get()); break;
+        case NodeKind::Conditional: {
+            auto& c = static_cast<const Conditional&>(n);
+            add(c.cond.get()); add(c.thenExpr.get()); add(c.elseExpr.get()); break;
+        }
+        default: break;
+    }
+    return out;
+}
+
+// Depth of the tree, computed with an explicit stack so it is safe on any
+// input. Returns the depth and, through `deepest`, the line of a deepest node.
+inline int treeDepth(const Node& root, int& deepestLine) {
+    int best = 0;
+    deepestLine = root.line;
+    std::vector<std::pair<const Node*, int>> work{{&root, 1}};
+    while (!work.empty()) {
+        auto [node, depth] = work.back();
+        work.pop_back();
+        if (depth > best) { best = depth; deepestLine = node->line; }
+        for (const Node* c : childrenOf(*node)) work.push_back({c, depth + 1});
+    }
+    return best;
+}
 
 // Count every node in a serialized AST (containers included). Used by the
 // optimizer to report node counts before/after.

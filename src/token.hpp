@@ -23,6 +23,7 @@ enum class TokenType {
     KwIf, KwElse, KwWhile,
     KwPrint, KwFunc, KwReturn,
     KwTrue, KwFalse, KwFor,
+    KwBreak, KwContinue, KwDo, KwVoid,
 
     // Operators
     Plus, Minus, Star, Slash, Percent,   // + - * / %
@@ -30,6 +31,8 @@ enum class TokenType {
     AndAnd, OrOr, Not,                   // && || !
     Assign,                              // =
     PlusAssign, MinusAssign, StarAssign, SlashAssign, PercentAssign,  // += -= *= /= %=
+    PlusPlus, MinusMinus,                // ++ --
+    Question,                            // ? (in a ? b : c)
 
     // Punctuation
     LBrace, RBrace,                      // { }
@@ -82,11 +85,18 @@ inline const char* tokenTypeName(TokenType t) {
         case TokenType::Not:           return "Not";
         case TokenType::Assign:        return "Assign";
         case TokenType::KwFor:         return "Keyword(for)";
+        case TokenType::KwBreak:       return "Keyword(break)";
+        case TokenType::KwContinue:    return "Keyword(continue)";
+        case TokenType::KwDo:          return "Keyword(do)";
+        case TokenType::KwVoid:        return "Keyword(void)";
+        case TokenType::Question:      return "Question";
         case TokenType::PlusAssign:    return "PlusAssign";
         case TokenType::MinusAssign:   return "MinusAssign";
         case TokenType::StarAssign:    return "StarAssign";
         case TokenType::SlashAssign:   return "SlashAssign";
         case TokenType::PercentAssign: return "PercentAssign";
+        case TokenType::PlusPlus:      return "PlusPlus";
+        case TokenType::MinusMinus:    return "MinusMinus";
         case TokenType::LBrace:        return "LBrace";
         case TokenType::RBrace:        return "RBrace";
         case TokenType::LParen:        return "LParen";
@@ -116,6 +126,9 @@ inline std::string tokenTypeLexeme(TokenType t) {
         case TokenType::StarAssign:    return "*=";
         case TokenType::SlashAssign:   return "/=";
         case TokenType::PercentAssign: return "%=";
+        case TokenType::PlusPlus:      return "++";
+        case TokenType::Question:      return "?";
+        case TokenType::MinusMinus:    return "--";
         default:                   return tokenTypeName(t);
     }
 }

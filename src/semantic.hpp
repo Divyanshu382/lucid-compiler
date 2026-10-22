@@ -22,7 +22,7 @@ namespace lucid {
 
 // Static types in Lucid. `Error` is an internal marker used to suppress
 // cascading messages once a sub-expression is already known bad.
-enum class Ty { Int, String, Bool, Error };
+enum class Ty { Int, String, Bool, Void, Error };
 
 const char* tyName(Ty t);
 
@@ -50,6 +50,7 @@ private:
     std::vector<std::string> scopeLabels_;
     std::unordered_map<std::string, FuncSig> funcs_;
     std::vector<Ty> returnStack_;       // enclosing function return types
+    int loopDepth_ = 0;                 // > 0 inside a loop body: break/continue allowed
 
     // Snapshot data for the UI.
     nlohmann::json variablesSnapshot_ = nlohmann::json::array();

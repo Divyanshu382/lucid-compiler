@@ -1,0 +1,8 @@
+// expect-exit: 0
+// expect-output: big|medium|1
+// expect-errors: 
+int x = 7;
+print(x > 5 ? "big" : "small");
+print(x > 10 ? "huge" : x > 5 ? "medium" : "small");
+int z = 0;
+print(true ? 1 : 10 / z);   // only the chosen side is evaluated

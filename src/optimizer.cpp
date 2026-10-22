@@ -4,6 +4,7 @@
 // interpreter (so it executes the smaller, equivalent program).
 // ============================================================================
 #include "optimizer.hpp"
+#include "intmath.hpp"
 
 namespace lucid {
 
@@ -36,9 +37,10 @@ void Optimizer::optStmtList(std::vector<NodePtr>& stmts) {
     for (auto& s : stmts) {
         NodePtr opt = optStmt(std::move(s));
         if (!opt) continue;                       // dropped (dead code)
-        bool isReturn = (opt->kind == NodeKind::Return);
+        bool jumpsAway = opt->kind == NodeKind::Return || opt->kind == NodeKind::Break ||
+                         opt->kind == NodeKind::Continue;
         out.push_back(std::move(opt));
-        if (isReturn) break;                      // everything after return is unreachable
+        if (jumpsAway) break;                     // everything after it is unreachable
     }
     stmts = std::move(out);
 }
@@ -57,7 +59,7 @@ NodePtr Optimizer::optStmt(NodePtr stmt) {
         }
         case NodeKind::Print: {
             auto* p = static_cast<Print*>(stmt.get());
-            p->expr = foldExpr(std::move(p->expr));
+            for (auto& a : p->args) a = foldExpr(std::move(a));
             return stmt;
         }
         case NodeKind::Return: {
@@ -84,8 +86,11 @@ NodePtr Optimizer::optStmt(NodePtr stmt) {
             auto* w = static_cast<While*>(stmt.get());
             w->cond = foldExpr(std::move(w->cond));
             optStmtList(w->body->statements);
-            if (isBool(w->cond.get()) && !boolVal(w->cond.get()))
-                return nullptr;                            // while(false) never runs
+            if (w->step) w->step = optStmt(std::move(w->step));
+            // while(false) never runs. A do-while(false) still runs its body
+            // once, so it is kept.
+            if (!w->doWhile && isBool(w->cond.get()) && !boolVal(w->cond.get()))
+                return nullptr;
             return stmt;
         }
         case NodeKind::FuncDecl: {
@@ -116,13 +121,25 @@ NodePtr Optimizer::foldExpr(NodePtr expr) {
         u->operand = foldExpr(std::move(u->operand));
         Node* o = u->operand.get();
         if (u->op == "!" && isBool(o)) return makeBool(!boolVal(o), u->line);
-        if (u->op == "-" && isInt(o))  return makeInt(-intVal(o), u->line);
+        int neg;
+        if (u->op == "-" && isInt(o) && checkedNeg(intVal(o), neg)) return makeInt(neg, u->line);
         return expr;
     }
 
     if (expr->kind == NodeKind::Call) {
         auto* c = static_cast<Call*>(expr.get());
         for (auto& a : c->args) a = foldExpr(std::move(a));
+        return expr;
+    }
+
+    // c ? a : b with a constant condition becomes just the chosen branch.
+    if (expr->kind == NodeKind::Conditional) {
+        auto* c = static_cast<Conditional*>(expr.get());
+        c->cond = foldExpr(std::move(c->cond));
+        c->thenExpr = foldExpr(std::move(c->thenExpr));
+        c->elseExpr = foldExpr(std::move(c->elseExpr));
+        if (isBool(c->cond.get()))
+            return boolVal(c->cond.get()) ? std::move(c->thenExpr) : std::move(c->elseExpr);
         return expr;
     }
 
@@ -146,18 +163,31 @@ NodePtr Optimizer::foldExpr(NodePtr expr) {
 
     // Integer arithmetic on two int literals.
     if (isInt(L) && isInt(R)) {
-        int a = intVal(L), c = intVal(R);
-        if (op == "+") return makeInt(a + c, line);
-        if (op == "-") return makeInt(a - c, line);
-        if (op == "*") return makeInt(a * c, line);
-        if (op == "/") { if (c == 0) return expr; return makeInt(a / c, line); }  // keep 1/0 for runtime
-        if (op == "%") { if (c == 0) return expr; return makeInt(a % c, line); }
+        int a = intVal(L), c = intVal(R), v = 0;
+        // Fold only when the result fits; otherwise keep the expression so the
+        // runtime reports the overflow (and division by zero) with its line.
+        if (op == "+") return checkedAdd(a, c, v) ? makeInt(v, line) : std::move(expr);
+        if (op == "-") return checkedSub(a, c, v) ? makeInt(v, line) : std::move(expr);
+        if (op == "*") return checkedMul(a, c, v) ? makeInt(v, line) : std::move(expr);
+        if (op == "/") { if (c == 0 || !checkedDiv(a, c, v)) return expr; return makeInt(v, line); }
+        if (op == "%") { if (c == 0) return expr; return makeInt(safeMod(a, c), line); }
         if (op == "<")  return makeBool(a <  c, line);
         if (op == ">")  return makeBool(a >  c, line);
         if (op == "<=") return makeBool(a <= c, line);
         if (op == ">=") return makeBool(a >= c, line);
         if (op == "==") return makeBool(a == c, line);
         if (op == "!=") return makeBool(a != c, line);
+    }
+
+    // A string joined with a literal number or bool: "n = " + 5 -> "n = 5".
+    if (op == "+" && (isStr(L) || isStr(R)) && (isStr(L) || isInt(L) || isBool(L)) &&
+        (isStr(R) || isInt(R) || isBool(R))) {
+        auto text = [](const Node* n) -> std::string {
+            if (isStr(n)) return strVal(n);
+            if (isInt(n)) return std::to_string(intVal(n));
+            return boolVal(n) ? "true" : "false";
+        };
+        return makeStr(text(L) + text(R), line);
     }
 
     // String concatenation / comparison on two string literals.

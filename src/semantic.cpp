@@ -14,6 +14,7 @@ const char* tyName(Ty t) {
         case Ty::Int:    return "int";
         case Ty::String: return "string";
         case Ty::Bool:   return "bool";
+        case Ty::Void:   return "void";
         case Ty::Error:  return "<error>";
     }
     return "<error>";
@@ -23,6 +24,7 @@ Ty SemanticAnalyzer::tyFromName(const std::string& name) {
     if (name == "int")    return Ty::Int;
     if (name == "string") return Ty::String;
     if (name == "bool")   return Ty::Bool;
+    if (name == "void")   return Ty::Void;
     return Ty::Error;
 }
 
@@ -53,6 +55,14 @@ std::string suggestName(const std::string& target, const std::vector<std::string
     // Only suggest when the names are genuinely close.
     int threshold = std::max(2, static_cast<int>(target.size()) / 3);
     if (!best.empty() && bestDist <= threshold) return best;
+    return "";
+}
+
+// Lucid conditions must be bool. C++ also accepts numbers (non-zero = true),
+// so say so and show the explicit comparison to write instead.
+static std::string conditionHint(Ty t) {
+    if (t == Ty::Int)    return " Unlike C++, Lucid does not treat numbers as true/false: compare instead, e.g. (x != 0).";
+    if (t == Ty::String) return " Compare the string instead, e.g. (s != \"\").";
     return "";
 }
 
@@ -173,8 +183,11 @@ void SemanticAnalyzer::checkFuncBody(FuncDecl* fn) {
         });
     }
     returnStack_.push_back(tyFromName(fn->returnType));
+    int savedLoopDepth = loopDepth_;
+    loopDepth_ = 0;                      // break/continue cannot leave a function
     // Body reuses the function scope (params + locals share it).
     checkBlock(fn->body.get(), /*newScope=*/false, "");
+    loopDepth_ = savedLoopDepth;
     returnStack_.pop_back();
     popScope();
 
@@ -226,42 +239,76 @@ void SemanticAnalyzer::checkStatement(Node* stmt) {
             Ty c = checkExpr(i->cond.get());
             if (c != Ty::Error && c != Ty::Bool)
                 reportTypeError("ConditionNotBoolean",
-                    "The condition of 'if' must be bool, but it is " + std::string(tyName(c)) + ".", i->line);
+                    "The condition of 'if' must be bool, but it is " + std::string(tyName(c)) + "." + conditionHint(c), i->line);
             checkBlock(i->thenBlock.get(), true, "if");
             if (i->elseBlock) checkBlock(i->elseBlock.get(), true, "else");
             break;
         }
         case NodeKind::While: {
             auto* w = static_cast<While*>(stmt);
+            const char* kw = w->doWhile ? "do-while" : (w->step ? "for" : "while");
             Ty c = checkExpr(w->cond.get());
             if (c != Ty::Error && c != Ty::Bool)
                 reportTypeError("ConditionNotBoolean",
-                    "The condition of 'while' must be bool, but it is " + std::string(tyName(c)) + ".", w->line);
-            checkBlock(w->body.get(), true, "while");
+                    "The condition of '" + std::string(kw) + "' must be bool, but it is " +
+                    std::string(tyName(c)) + "." + conditionHint(c), w->line);
+            ++loopDepth_;
+            checkBlock(w->body.get(), true, kw);
+            --loopDepth_;
+            if (w->step) checkStatement(w->step.get());   // for-loop update
+            break;
+        }
+        case NodeKind::Break:
+        case NodeKind::Continue: {
+            if (loopDepth_ == 0) {
+                bool isBreak = stmt->kind == NodeKind::Break;
+                reportTypeError(isBreak ? "BreakOutsideLoop" : "ContinueOutsideLoop",
+                    std::string("'") + (isBreak ? "break" : "continue") +
+                    "' can only be used inside a loop.", stmt->line);
+            }
             break;
         }
         case NodeKind::Print: {
             auto* p = static_cast<Print*>(stmt);
-            checkExpr(p->expr.get());   // any well-typed value may be printed
+            for (auto& a : p->args) {   // any well-typed value may be printed
+                if (checkExpr(a.get()) == Ty::Void)
+                    reportTypeError("VoidValue",
+                        "Cannot print the result of a void function: it returns nothing.", p->line);
+            }
             break;
         }
         case NodeKind::Return: {
             auto* r = static_cast<Return*>(stmt);
-            Ty valTy = checkExpr(r->value.get());
+            Ty valTy = r->value ? checkExpr(r->value.get()) : Ty::Void;
             if (returnStack_.empty()) {
                 reportTypeError("ReturnOutsideFunction",
                     "'return' can only appear inside a function.", r->line);
             } else {
                 Ty want = returnStack_.back();
-                if (valTy != Ty::Error && want != Ty::Error && valTy != want)
+                if (want == Ty::Void && r->value) {
+                    reportTypeError("ReturnTypeMismatch",
+                        "A void function cannot return a value; use plain 'return;'.", r->line);
+                } else if (want != Ty::Void && want != Ty::Error && !r->value) {
+                    reportTypeError("MissingReturnValue",
+                        "This function must return a " + std::string(tyName(want)) +
+                        " value, but 'return;' gives none.", r->line);
+                } else if (valTy != Ty::Error && want != Ty::Error && valTy != want) {
                     reportTypeError("ReturnTypeMismatch",
                         "Function should return " + std::string(tyName(want)) +
                         " but this returns " + tyName(valTy) + ".", r->line);
+                }
             }
             break;
         }
         case NodeKind::FuncDecl: {
             checkFuncBody(static_cast<FuncDecl*>(stmt));
+            break;
+        }
+        case NodeKind::Block: {
+            // A nested { ... } block, including the block a for-loop becomes
+            // (its initialiser and loop), gets its own scope.
+            auto* b = static_cast<Block*>(stmt);
+            checkBlock(b, true, b->scopeLabel);
             break;
         }
         case NodeKind::Call: {
@@ -298,7 +345,8 @@ Ty SemanticAnalyzer::checkExpr(Node* expr) {
             if (u->op == "!") {
                 if (t != Ty::Bool) {
                     reportTypeError("TypeMismatch",
-                        "Operator '!' needs a bool but got " + std::string(tyName(t)) + ".", u->line);
+                        "Operator '!' needs a bool but got " + std::string(tyName(t)) + "." +
+                        (t == Ty::Int ? " To test for zero, write (x == 0)." : ""), u->line);
                     return Ty::Error;
                 }
                 return Ty::Bool;
@@ -313,6 +361,23 @@ Ty SemanticAnalyzer::checkExpr(Node* expr) {
         }
         case NodeKind::BinaryOp: return checkBinary(static_cast<BinaryOp*>(expr));
         case NodeKind::Call:     return checkCall(static_cast<Call*>(expr));
+        case NodeKind::Conditional: {
+            auto* c = static_cast<Conditional*>(expr);
+            Ty ct = checkExpr(c->cond.get());
+            Ty a = checkExpr(c->thenExpr.get());
+            Ty b = checkExpr(c->elseExpr.get());
+            if (ct != Ty::Error && ct != Ty::Bool)
+                reportTypeError("ConditionNotBoolean",
+                    "The condition of '?:' must be bool, but it is " + std::string(tyName(ct)) + "." + conditionHint(ct), c->line);
+            if (a == Ty::Error || b == Ty::Error) return Ty::Error;
+            if (a != b) {
+                reportTypeError("TypeMismatch",
+                    "Both results of '?:' must have the same type, not " +
+                    std::string(tyName(a)) + " and " + tyName(b) + ".", c->line);
+                return Ty::Error;
+            }
+            return a;
+        }
         default:                 return Ty::Error;
     }
 }
@@ -324,12 +389,14 @@ Ty SemanticAnalyzer::checkBinary(BinaryOp* bin) {
 
     const std::string& op = bin->op;
 
-    // '+' : int addition OR string concatenation.
+    // '+' : int addition, or string concatenation. With a string on either
+    // side, an int or bool on the other side is joined as text: "n = " + 5.
     if (op == "+") {
         if (l == Ty::Int && r == Ty::Int) return Ty::Int;
-        if (l == Ty::String && r == Ty::String) return Ty::String;
+        bool textual = (l == Ty::String && r != Ty::Void) || (r == Ty::String && l != Ty::Void);
+        if (textual) return Ty::String;
         reportTypeError("TypeMismatch",
-            "Operator '+' needs two ints or two strings, not " +
+            "Operator '+' needs two ints, or a string on one side, not " +
             std::string(tyName(l)) + " and " + tyName(r) + ".", bin->line);
         return Ty::Error;
     }
@@ -380,7 +447,11 @@ Ty SemanticAnalyzer::checkCall(Call* call) {
         for (const auto& kv : funcs_) names.push_back(kv.first);
         std::string hint = suggestName(call->callee, names);
         std::string msg = "Call to undefined function '" + call->callee + "'.";
-        if (!hint.empty()) msg += " Did you mean '" + hint + "'?";
+        static const char* printLike[] = {"printf", "println", "puts", "printLine", "cout", "echo", "write"};
+        bool isPrintLike = false;
+        for (const char* p : printLike) if (call->callee == p) isPrintLike = true;
+        if (isPrintLike) msg += " To print in Lucid, use print(...), e.g. print(\"x =\", x);";
+        else if (!hint.empty()) msg += " Did you mean '" + hint + "'?";
         reportTypeError("UndefinedFunction", msg, call->line);
         return Ty::Error;
     }

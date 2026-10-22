@@ -3,6 +3,7 @@
 // Executes the (optimized, already type-checked) AST and collects print output.
 // ============================================================================
 #include "interpreter.hpp"
+#include "intmath.hpp"
 
 namespace lucid {
 
@@ -47,6 +48,7 @@ void Interpreter::spendStep(int line) {
 
 std::vector<std::string> Interpreter::run(Program& program) {
     output_.clear();
+    outputBytes_ = 0;
     steps_ = 0;
     callDepth_ = 0;
     scopes_.clear();
@@ -62,8 +64,18 @@ std::vector<std::string> Interpreter::run(Program& program) {
             if (stmt->kind == NodeKind::FuncDecl) continue;  // definitions, not executed here
             execStatement(stmt.get());
         }
+        if (runsMainAutomatically(program)) {   // C-style program: run main()
+            Call mainCall(funcs_["main"]->line);
+            mainCall.callee = "main";
+            callFunction(&mainCall);
+        }
     } catch (const RuntimeFault& f) {
         errors_.add("runtime", "RuntimeError", f.message, f.line, 0, sourceLine(source_, f.line));
+    } catch (const std::bad_variant_access&) {
+        // Unreachable for type-checked programs; a safety net so a checker gap
+        // can never crash the compiler or the playground server.
+        errors_.add("runtime", "InternalError",
+                    "A value had an unexpected type while running. Please report this program.", 0, 0, "");
     } catch (const ReturnSignal&) {
         // A stray top-level return — semantic analysis already flagged it.
     }
@@ -98,22 +110,41 @@ void Interpreter::execStatement(Node* stmt) {
         }
         case NodeKind::While: {
             auto* w = static_cast<While*>(stmt);
-            while (asBool(evalExpr(w->cond.get()))) {
+            // A do-while runs its body once before the first test.
+            for (bool first = true; ; first = false) {
+                if (!(w->doWhile && first) && !asBool(evalExpr(w->cond.get()))) break;
                 spendStep(w->line);
-                execBlock(w->body.get());
+                try {
+                    execBlock(w->body.get());
+                } catch (const BreakSignal&) {
+                    break;
+                } catch (const ContinueSignal&) {
+                    // fall through to the update, then the next test
+                }
+                if (w->step) execStatement(w->step.get());   // for-loop update
             }
             break;
         }
+        case NodeKind::Break:    throw BreakSignal{};
+        case NodeKind::Continue: throw ContinueSignal{};
         case NodeKind::Print: {
             auto* p = static_cast<Print*>(stmt);
             if (output_.size() >= kMaxOutputLines)
                 throw RuntimeFault{ "Output limit reached (10,000 lines). Is a loop printing forever?", p->line };
-            output_.push_back(valueToString(evalExpr(p->expr.get())));
+            std::string line;   // print(a, b, c): one line, values separated by spaces
+            for (size_t i = 0; i < p->args.size(); ++i) {
+                if (i) line += ' ';
+                line += valueToString(evalExpr(p->args[i].get()));
+            }
+            outputBytes_ += line.size() + 1;
+            if (outputBytes_ > kMaxOutputBytes)
+                throw RuntimeFault{ "Output limit reached (2 MB of text). Is a loop printing forever?", p->line };
+            output_.push_back(line);
             break;
         }
         case NodeKind::Return: {
             auto* r = static_cast<Return*>(stmt);
-            throw ReturnSignal{ evalExpr(r->value.get()) };
+            throw ReturnSignal{ r->value ? evalExpr(r->value.get()) : Value{0} };   // `return;`: no value
         }
         case NodeKind::Block:
             // The optimizer may replace an if(true){...} with its bare block.
@@ -145,10 +176,18 @@ Value Interpreter::evalExpr(Node* expr) {
             auto* u = static_cast<UnaryOp*>(expr);
             Value operand = evalExpr(u->operand.get());
             if (u->op == "!") return Value{ !asBool(operand) };
-            return Value{ -asInt(operand) };   // unary '-'
+            int neg;                            // unary '-'
+            if (!checkedNeg(asInt(operand), neg))
+                throw RuntimeFault{ "Integer overflow: -(-2147483648) does not fit in an int.", u->line };
+            return Value{ neg };
         }
         case NodeKind::BinaryOp: return evalBinary(static_cast<BinaryOp*>(expr));
         case NodeKind::Call:     return callFunction(static_cast<Call*>(expr));
+        case NodeKind::Conditional: {
+            auto* c = static_cast<Conditional*>(expr);
+            return asBool(evalExpr(c->cond.get())) ? evalExpr(c->thenExpr.get())
+                                                   : evalExpr(c->elseExpr.get());
+        }
         default:
             throw RuntimeFault{ "Cannot evaluate expression.", expr->line };
     }
@@ -171,21 +210,33 @@ Value Interpreter::evalBinary(BinaryOp* bin) {
     Value r = evalExpr(bin->right.get());
 
     if (op == "+") {
-        if (std::holds_alternative<std::string>(l))
-            return Value{ asStr(l) + asStr(r) };
-        return Value{ asInt(l) + asInt(r) };
+        if (std::holds_alternative<std::string>(l) || std::holds_alternative<std::string>(r)) {
+            std::string a = valueToString(l), b = valueToString(r);   // "n = " + 5
+            if (a.size() + b.size() > kMaxStringLength)
+                throw RuntimeFault{ "String too long: over 1,000,000 characters. "
+                                    "Is a loop joining text forever?", bin->line };
+            return Value{ a + b };
+        }
     }
-    if (op == "-") return Value{ asInt(l) - asInt(r) };
-    if (op == "*") return Value{ asInt(l) * asInt(r) };
-    if (op == "/") {
-        int d = asInt(r);
-        if (d == 0) throw RuntimeFault{ "Division by zero.", bin->line };
-        return Value{ asInt(l) / d };
-    }
-    if (op == "%") {
-        int d = asInt(r);
-        if (d == 0) throw RuntimeFault{ "Modulo by zero.", bin->line };
-        return Value{ asInt(l) % d };
+
+    // Integer arithmetic, checked: overflow is a runtime error, never
+    // undefined behaviour (see intmath.hpp).
+    if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
+        int a = asInt(l), b = asInt(r), out = 0;
+        bool ok = true;
+        if (op == "+") ok = checkedAdd(a, b, out);
+        else if (op == "-") ok = checkedSub(a, b, out);
+        else if (op == "*") ok = checkedMul(a, b, out);
+        else {
+            if (b == 0) throw RuntimeFault{ op == "/" ? "Division by zero." : "Modulo by zero.", bin->line };
+            if (op == "/") ok = checkedDiv(a, b, out);
+            else out = safeMod(a, b);
+        }
+        if (!ok)
+            throw RuntimeFault{ "Integer overflow: " + std::to_string(a) + " " + op + " " +
+                                std::to_string(b) + " does not fit in an int "
+                                "(range -2147483648 to 2147483647).", bin->line };
+        return Value{ out };
     }
     if (op == "<")  return Value{ asInt(l) <  asInt(r) };
     if (op == ">")  return Value{ asInt(l) >  asInt(r) };
@@ -211,7 +262,7 @@ Value Interpreter::callFunction(Call* call) {
     spendStep(call->line);
     if (++callDepth_ > kMaxCallDepth) {
         --callDepth_;
-        throw RuntimeFault{ "Call stack overflow (runaway recursion?).", call->line };
+        throw RuntimeFault{ "Call stack overflow: more than 10,000 nested calls (runaway recursion?).", call->line };
     }
 
     // Functions run in an isolated scope chain: only params are visible.

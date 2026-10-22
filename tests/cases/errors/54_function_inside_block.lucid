@@ -1,0 +1,6 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: syntax:UnexpectedToken
+if (true) {
+    int f(int a) { return a + 1; }   // one error, body skipped
+}

@@ -16,6 +16,7 @@
 #include <string>
 
 #include "compiler.hpp"
+#include "bigstack.hpp"
 #include "../third_party/json.hpp"
 
 using nlohmann::json;
@@ -32,7 +33,7 @@ static void printAst(const json& node, const std::string& prefix, bool last, boo
         printAst(kids[i], childPrefix, i + 1 == kids.size(), false);
 }
 
-int main(int argc, char** argv) {
+static int runCli(int argc, char** argv) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);   // the AST tree uses box-drawing characters
 #endif
@@ -143,4 +144,12 @@ int main(int argc, char** argv) {
     }
 
     return result.value("success", false) ? 0 : 1;
+}
+
+int main(int argc, char** argv) {
+    // The AST printer and every compiler phase recurse over the tree, so run
+    // everything on a large stack (the Windows main thread has only 1 MB).
+    int code = 0;
+    lucid::runOnLargeStack([&] { code = runCli(argc, argv); });
+    return code;
 }

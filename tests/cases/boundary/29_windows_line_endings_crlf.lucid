@@ -1,0 +1,5 @@
+// expect-exit: 0
+// expect-output: 5
+// expect-errors: 
+int x = 5;
+print(x);

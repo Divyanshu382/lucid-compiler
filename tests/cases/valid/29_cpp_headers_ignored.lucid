@@ -1,0 +1,11 @@
+// expect-exit: 0
+// expect-output: 5
+// expect-errors: 
+#include <iostream>
+#include <string>
+using namespace std;
+int main() {
+    int x = 5;
+    print(x);
+    return 0;
+}

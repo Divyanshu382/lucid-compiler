@@ -1,0 +1,6 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:TypeMismatch | semantic:VoidValue
+func f(): void { print(1); }
+int x = f();
+print(f());

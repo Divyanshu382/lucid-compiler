@@ -52,6 +52,34 @@ if (score >= 90) {
 `
   },
   {
+    name: "🧩 C-style syntax — main, break, ?:, do-while",
+    code: `/* Lucid also understands familiar C-style syntax. */
+int max(int a, int b) {
+    return a > b ? a : b;          // conditional expression
+}
+
+void countdown(int from) {
+    do {
+        print("t-minus", from);
+        from--;
+    } while (from > 0);
+}
+
+int main() {                       // runs automatically
+    int total = 0, skipped;
+    for (int i = 1; i <= 10; i++) {
+        if (i % 3 == 0) { skipped++; continue; }
+        if (i > 8) { break; }
+        total += i;
+    }
+    print("total = " + total, "skipped:", skipped);
+    print("max is", max(4, 9));
+    countdown(3);
+    return 0;
+}
+`
+  },
+  {
     name: "🌀 Recursion — factorial & Fibonacci",
     code: `func fact(int n): int {
     if (n <= 1) { return 1; }

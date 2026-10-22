@@ -87,23 +87,36 @@ if (total > 50) {
 }
 ```
 
-**Features:** typed variable declarations, assignment, compound assignment
-(`+= -= *= /= %=`), arithmetic (`+ - * / %`), comparison (`< > <= >= == !=`),
-boolean logic (`&& || !`), `if` / `else if` / `else`, `while`, `for`, `print`,
-recursive functions with typed params + return type, and `// line comments`.
+**Features:** typed variable declarations (with or without an initial value,
+several per line), assignment, compound assignment (`+= -= *= /= %=`),
+increment / decrement (`x++ ++x x-- --x`), arithmetic (`+ - * / %`),
+comparison (`< > <= >= == !=`), boolean logic (`&& || !`), the conditional
+expression `c ? a : b`, `if` / `else if` / `else`, `while`, `do … while`,
+`for`, `break`, `continue`, `print` with any number of values, recursive
+functions (`func f(int a): int` or C-style `int f(int a)`), `void` functions,
+and `//` and `/* */` comments.
 
-`for`, `else if` and compound assignment are **syntactic sugar**: the parser
-rewrites them into existing nodes (`for` becomes a block holding the
-initialiser and a `while`; `x += e` becomes `x = x + e`), so no later phase
-needed to change to support them.
+**C-style programs work as written:** function prototypes are accepted, a
+parameterless `main()` runs automatically when there is no other top-level
+code, and `printf` gets a pointer to `print`. Code pasted from PDFs, Word or
+chat apps also works: invisible special spaces count as spaces, curly quotes as
+`"`, and look-alike symbols (`–`, `≤`, `×`) get a "did you mean" message.
+
+Most of this is **syntactic sugar** handled in the parser: `for` becomes a
+`while` with an update step, `else if` an `if` inside the `else` block,
+`x += e` and `x++` become `x = x + …`, and `int a, b;` becomes two
+declarations. `break`, `continue`, `do … while` and `?:` are real language
+features carried through every phase.
 
 **Type rules (crisp, for the viva):**
-- `+` works on two `int`s (addition) **or** two `string`s (concatenation).
+- `+` works on two `int`s (addition), or joins text when either side is a
+  `string` (`"n = " + 5` gives `"n = 5"`).
 - `- * / %` require two `int`s.
 - `< > <= >=` require two `int`s and produce `bool`.
 - `== !=` compare two values **of the same type** and produce `bool`.
 - `&& || !` operate on `bool`.
-- `if`/`while` conditions must be `bool`.
+- `if`/`while`/`do`/`?:` conditions must be `bool`.
+- `break` and `continue` only inside loops; a `void` function returns no value.
 - Functions run in an **isolated scope**: only their parameters (and other
   functions) are visible — never globals. The type checker and interpreter agree
   on this, so a program that type-checks won't hit a surprise at runtime.
@@ -253,6 +266,40 @@ the playground, so it is larger than the sum of the phases.
 
 ---
 
+## Robustness and limits
+
+Lucid is tested against hostile input as well as normal programs:
+
+- **Same results as C++.** 5,000 randomly generated expressions and a set of
+  whole programs are compiled by both Lucid and clang++; the output is
+  identical (precedence, associativity, `/` and `%` with negative numbers,
+  short-circuit `&&`/`||`, `?:`, scoping, recursion).
+- **Fuzzing.** Thousands of randomly corrupted programs, including under
+  AddressSanitizer and UndefinedBehaviorSanitizer, produce only ordinary
+  diagnostics: no crash, no hang.
+- **Integer overflow is a runtime error.** In C++ it is undefined behaviour,
+  and `INT_MIN / -1` even crashes the program; Lucid reports
+  `Integer overflow: ... does not fit in an int` (like C++'s
+  `-fsanitize=undefined`). `INT_MIN % -1` is 0.
+
+Limits, each reported as an ordinary error:
+
+| Limit | Value |
+|---|---|
+| Nesting of brackets, blocks and unary operators | 256 levels (clang's default bracket limit is also 256) |
+| Depth of the syntax tree (e.g. very long operator chains) | 2,000 levels |
+| Nested function calls (recursion) | 10,000 |
+| Steps (loop iterations + calls) per run | 2,000,000 |
+| Length of one string | 1,000,000 characters |
+| Program output | 10,000 lines / 2 MB |
+
+Each compilation runs on its own thread with a 256 MB stack
+([`src/bigstack.cpp`](src/bigstack.cpp)), so deep recursion cannot overflow
+the small stacks of server worker threads (512 KB on macOS) or the Windows
+main thread (1 MB).
+
+---
+
 ## Gemini API key (AI features)
 
 The AI features are **optional**. Get a free key at
@@ -324,6 +371,8 @@ src/
   optimizer.hpp/.cpp   # Phase 4: constant folding + dead-code elimination
   ircode.hpp/.cpp      # Phase 5: three-address code (quadruples)
   ai_proxy.hpp/.cpp    # server only: Gemini relay for the server key (not compiler code)
+  bigstack.hpp/.cpp    # runs each compilation on a 256 MB stack
+  intmath.hpp          # overflow-checked integer arithmetic
   interpreter.hpp/.cpp # Phase 6: tree-walking evaluator
   compiler.hpp/.cpp    # orchestrates the phases, builds the result JSON
   main_cli.cpp         # `lucidc`  entry point
@@ -350,7 +399,7 @@ input/output, so each phase is easy to explain out loud.
 | Lexical   | unknown character; unterminated string |
 | Syntax    | unexpected token; missing `;`, `)`, `}`; malformed statement; integer overflow |
 | Semantic  | undeclared / redeclared variable; type mismatch in declaration and operations; non-boolean condition; call to undefined function; wrong argument count / types; return-type mismatch |
-| Runtime   | division / modulo by zero; runaway recursion (call depth > 2,000); execution budget exceeded (> 2,000,000 loop iterations + calls — catches infinite loops); output over 10,000 lines |
+| Runtime   | division / modulo by zero; integer overflow; runaway recursion (call depth > 10,000); execution budget exceeded (> 2,000,000 loop iterations + calls — catches infinite loops); output over 10,000 lines |
 
 Semantic errors are reported **all in one pass** (the checker doesn't stop at the
 first). Undeclared names get a Levenshtein-based *"Did you mean …?"* suggestion.

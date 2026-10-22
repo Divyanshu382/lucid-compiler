@@ -1,0 +1,8 @@
+// expect-exit: 0
+// expect-output: 5|done
+// expect-errors: 
+/* A block comment
+   across lines */
+int x = 5; /* inline */
+print(x);
+print("done");  // line comment

@@ -1,0 +1,13 @@
+// expect-exit: 0
+// expect-output: 4|hello
+// expect-errors: 
+func show(int n): void {
+    if (n < 0) { return; }
+    print(n);
+}
+void greet() {
+    print("hello");
+}
+show(-1);
+show(4);
+greet();

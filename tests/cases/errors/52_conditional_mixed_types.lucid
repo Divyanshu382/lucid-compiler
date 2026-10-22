@@ -1,0 +1,5 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:TypeMismatch
+int x = 1;
+print(x > 0 ? 1 : "no");

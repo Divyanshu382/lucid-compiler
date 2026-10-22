@@ -7,8 +7,10 @@
 //   1. Constant folding      — 2 + 3 -> 5, "a"+"b" -> "ab", !true -> false,
 //                              1 < 2 -> true, etc.
 //   2. Dead-code elimination — drop if(false) branches, unwrap if(true),
-//                              remove while(false), and delete any statements
-//                              that follow a return in the same block.
+//                              remove while(false), choose the branch of a
+//                              constant ?:, and delete any statements that
+//                              follow a return, break or continue in the same
+//                              block.
 // Node counts before/after are reported by the compiler for the UI.
 // ============================================================================
 #pragma once

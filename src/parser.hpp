@@ -29,6 +29,26 @@ private:
     ErrorList& errors_;
     size_t pos_ = 0;
 
+    // `int a = 1, b, c = 3;` yields one VarDecl per name. The first is returned
+    // as the statement; the rest wait here and are appended right after it by
+    // whichever statement list is being parsed.
+    std::vector<NodePtr> pending_;
+    void drainPending(std::vector<NodePtr>& into);
+
+    // Nesting limit, like a C++ compiler's (clang stops at 256 nested
+    // brackets): parentheses, blocks and unary operators each add a level.
+    // Past the limit the parser reports one error and stops, so absurd input
+    // can never exhaust the stack.
+    static constexpr int kMaxNesting = 256;
+    int nesting_ = 0;
+    bool tooDeep_ = false;
+    void enterNesting();
+    struct Nest {
+        Parser& p;
+        explicit Nest(Parser& parser) : p(parser) { p.enterNesting(); }
+        ~Nest() { --p.nesting_; }
+    };
+
     // Thrown internally to unwind to the nearest recovery point.
     struct ParseError {};
 
@@ -50,6 +70,16 @@ private:
     NodePtr varDecl();
     NodePtr simpleStatement();  // assignment or bare call, starting with an identifier
     NodePtr ifStatement();
+    NodePtr doWhileStatement();
+    NodePtr breakOrContinue();
+    NodePtr cFuncDecl();                 // C-style: int add(int a, int b) { ... }
+    NodePtr skipNestedFunction();        // report a function inside a block, skip it whole
+    bool isPrototype() const;            // int add(int, int);  (no body)
+    void parseParams(FuncDecl& fn);      // ( type name, ... )  or  (void)
+    std::string returnTypeName();        // a type, or void
+    bool isCFuncStart() const;           // type/void IDENT '(' ...
+    NodePtr declarator(const std::string& type);
+    static NodePtr defaultValue(const std::string& type, int line);
     NodePtr forStatement();
     NodePtr assignmentNoSemi();   // `x = e` / `x += e` without the trailing ';'
     bool isCompoundAssign(TokenType t) const;
@@ -62,6 +92,7 @@ private:
 
     // --- expressions (precedence climbing) ---
     NodePtr expression();
+    NodePtr conditional();               // c ? a : b
     NodePtr logicalOr();
     NodePtr logicalAnd();
     NodePtr equality();

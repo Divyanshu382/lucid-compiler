@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-output: 0 0|0 1|1 0|1 1|0|1|3|4
+// expect-errors: 
+// break leaves only the inner loop; continue skips to the next round
+for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 10; j++) {
+        if (j == 2) { break; }
+        print(i, j);
+    }
+}
+for (int k = 0; k < 5; k++) {
+    if (k == 2) { continue; }   // the k++ update must still run
+    print(k);
+}

@@ -1,0 +1,6 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:MissingReturnValue
+int f() {
+    return;
+}

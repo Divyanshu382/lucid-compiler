@@ -1,0 +1,4 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: lexical:UnknownCharacter
+int x = 5 – 3;

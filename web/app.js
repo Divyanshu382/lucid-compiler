@@ -31,22 +31,27 @@ let serverAi = false;
 const aiReady = (apiKey) => !!apiKey || serverAi;
 
 // One description of the language, shared by every prompt that writes code.
-const LUCID_SPEC = `Lucid is a small statically-typed language.
-- Types: int, string, bool. Every variable is declared with an initialiser: int x = 5;
-- Statements end with ';'. Blocks use { }. Comments start with //.
-- Assignment: x = e;   Compound: x += e;  x -= e;  x *= e;  x /= e;  x %= e;
-- if (cond) { ... } else if (cond) { ... } else { ... }    (braces are required)
-- while (cond) { ... }
-- for (int i = 0; i < n; i += 1) { ... }
-- print(expr);   prints one value per line.
-- Functions: func name(int a, string b): int { ... return value; }
-  Every function returns a value of its declared type. Recursion is allowed.
+const LUCID_SPEC = `Lucid is a small statically-typed, C-like language.
+- Types: int, string, bool. Declarations: int x = 5;  int y;  (y starts at 0, a
+  string at "", a bool at false)  int a = 1, b = 2;
+- Statements end with ';'. Blocks use { }. Comments: // line   and   /* block */
+- Assignment: x = e;  x += e;  x -= e;  x *= e;  x /= e;  x %= e;  x++;  x--;  ++x;  --x;
+- if (c) { } else if (c) { } else { }      (braces are required)
+- while (c) { }    do { } while (c);    for (int i = 0; i < n; i++) { }
+- break; and continue; inside loops.   Conditional expression: c ? a : b
+- print(a, b, ...) prints the values on one line separated by spaces.
+- "text" + n joins a number or bool onto a string.
+- Functions, either style:
+    func add(int a, int b): int { return a + b; }
+    int add(int a, int b) { return a + b; }
+  void functions return nothing (use plain return;). Recursion is allowed.
+  If a program defines int main() and has no other top-level code, main() runs automatically.
 - IMPORTANT: a function body can only see its own parameters and locals, plus
   other functions. It can NOT see global variables - pass values in as parameters.
-- Operators: + (int addition or string concatenation), - * / % on ints,
+- Operators: + (int addition or string joining), - * / % on ints,
   < > <= >= on ints, == != on two values of the same type, && || ! on bools.
 - Conditions must be bool; there is no truthiness (if (n) is an error).
-- No arrays, no loops other than while/for, no input, no string indexing.`;
+- No arrays, no char or float types, no input, no printf (use print).`;
 
 // ---- DOM handles -----------------------------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -192,6 +197,9 @@ const KIND_COLORS = {
   Print:     ["#3a2c17", "#ffa657"],
   FuncDecl:  ["#3a2c17", "#ffa657"],
   Return:    ["#3a2c17", "#ffa657"],
+  Break:     ["#3a2c17", "#ffa657"],
+  Continue:  ["#3a2c17", "#ffa657"],
+  Conditional: ["#2a1f3d", "#d2a8ff"],
   Call:      ["#132a3f", "#6ea8fe"],
   BinaryOp:  ["#2a1f3d", "#d2a8ff"],
   UnaryOp:   ["#2a1f3d", "#d2a8ff"],

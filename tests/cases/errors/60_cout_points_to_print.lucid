@@ -1,0 +1,8 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: syntax:UnexpectedToken
+int main() {
+    int n = 3;
+    cout << n << endl;
+    return 0;
+}
