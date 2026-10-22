@@ -38,7 +38,9 @@ module.exports = (req, res) => {
   try { ensureExecutable(); }
   catch (e) { return res.status(500).json(internalError("Compiler binary missing: " + e.message)); }
 
-  const child = spawn(binary, [], { timeout: 20000 });
+  // bin/ may also hold the C++ runtime the binary was linked against.
+  const env = { ...process.env, LD_LIBRARY_PATH: path.dirname(BUNDLED) };
+  const child = spawn(binary, [], { timeout: 20000, env });
   let out = "";
   child.stdout.on("data", (d) => { out += d; });
   child.on("error", (e) => res.status(500).json(internalError("Could not start the compiler: " + e.message)));
