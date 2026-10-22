@@ -28,7 +28,11 @@ let lastAiCall = null;   // { model, ms, via } of the most recent successful cal
 // for every visitor with no key typed in: requests go to the server's /ai
 // relay, which adds the key, so the key never reaches the browser.
 let serverAi = false;
-const aiReady = (apiKey) => !!apiKey || serverAi;
+// True when the server also holds a DeepSeek key: the backup, used only when
+// every Gemini model has failed.
+let serverBackup = false;
+const BACKUP_MODEL = "deepseek-flash";
+const aiReady = (apiKey) => !!apiKey || serverAi || serverBackup;
 
 // One description of the language, shared by every prompt that writes code.
 const LUCID_SPEC = `Lucid compiles a subset of C++. Write standard C++ using only these features:
@@ -529,16 +533,22 @@ function retryDelayMs(body) {
 async function geminiCall(prompt, apiKey) {
   const viaServer = !apiKey;   // a pasted key takes priority over the server's
   const failures = [];
-  const queue = [...GEMINI_MODELS];
+  // Gemini first (if there is a Gemini key), then the DeepSeek backup (if the
+  // server has one). The backup always goes through the server.
+  const queue = apiKey || serverAi ? [...GEMINI_MODELS] : [];
+  if (serverBackup) queue.push(BACKUP_MODEL);
+  let keyRejected = "";
   const retried = new Set();
   while (queue.length) {
     const model = queue.shift();
+    const isBackup = model === BACKUP_MODEL;
+    const throughServer = viaServer || isBackup;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
     const started = performance.now();
     let res;
     try {
-      res = viaServer
+      res = throughServer
         // Server relay: the server adds its own key; we send only model + prompt.
         ? await fetch("/ai", {
             method: "POST",
@@ -562,14 +572,18 @@ async function geminiCall(prompt, apiKey) {
 
     if (!res.ok) {
       const body = await res.text();
-      // A bad or unauthorised key fails identically on every model: stop now.
-      if (res.status === 400 || res.status === 401 || res.status === 403) {
-        const whose = viaServer ? "the server's API key (gemini.key / GEMINI_API_KEY)" : "the API key you pasted";
-        throw new Error(`Gemini rejected the request (HTTP ${res.status}) - check ${whose}. ${body.slice(0, 200)}`);
+      // A rejected Gemini key fails the same way on every Gemini model: skip
+      // them and go straight to the backup, if there is one.
+      if (!isBackup && (res.status === 400 || res.status === 401 || res.status === 403)) {
+        const whose = viaServer ? "the server's Gemini key (gemini.key / GEMINI_API_KEY)" : "the Gemini key you pasted";
+        keyRejected = `Gemini rejected the request (HTTP ${res.status}) - check ${whose}. ${body.slice(0, 200)}`;
+        failures.push(`Gemini: key rejected (HTTP ${res.status})`);
+        while (queue.length && queue[0] !== BACKUP_MODEL) queue.shift();
+        continue;
       }
       // Rate-limited (free tier): if Google says the wait is short, wait and
       // retry this model once before moving on.
-      const wait = res.status === 429 ? retryDelayMs(body) : null;
+      const wait = res.status === 429 && !isBackup ? retryDelayMs(body) : null;
       if (wait !== null && wait <= 15000 && !retried.has(model)) {
         retried.add(model);
         await new Promise((r) => setTimeout(r, wait + 250));
@@ -586,9 +600,11 @@ async function geminiCall(prompt, apiKey) {
     const text = parts.filter((p) => p.text && !p.thought).map((p) => p.text).join("");
     if (!text) { failures.push(`${model}: empty reply`); continue; }
 
-    lastAiCall = { model, ms: Math.round(performance.now() - started), via: viaServer ? "server" : "browser" };
+    lastAiCall = { model, ms: Math.round(performance.now() - started),
+                   via: throughServer ? "server" : "browser", backup: isBackup };
     return text;
   }
+  if (keyRejected && !serverBackup) throw new Error(keyRejected);
   throw new Error("Every model was unavailable. " + failures.join("; ") + ". "
     + "On the free tier this usually means too many requests in the last minute - wait a minute and try again.");
 }
@@ -596,7 +612,8 @@ async function geminiCall(prompt, apiKey) {
 // "Answered by gemini-3.5-flash in 2.3 s" - shown under every AI reply.
 function aiFooter() {
   if (!lastAiCall) return "";
-  const how = lastAiCall.via === "server" ? " via the server's key" : " using your key";
+  const how = lastAiCall.backup ? " (backup, because Gemini was unavailable)"
+            : lastAiCall.via === "server" ? " via the server's key" : " using your key";
   return `<p class="ai-footer">Answered by <code>${lastAiCall.model}</code> in ${(lastAiCall.ms / 1000).toFixed(1)} s${how}</p>`;
 }
 
@@ -666,7 +683,46 @@ Return ONLY the corrected, complete program. No explanation, no markdown.`;
   return stripFences(text);
 }
 
-// The agent: perceive (error) -> act (ask for fix) -> observe (recompile), x3.
+// Line-by-line difference between two versions (longest common subsequence),
+// so a proposed fix can be reviewed before it is applied.
+function lineDiff(before, after) {
+  const a = before.replace(/\n$/, "").split("\n"), b = after.replace(/\n$/, "").split("\n");
+  if (a.length * b.length > 250000) return null;            // too long to compare
+  const L = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--)
+    for (let j = b.length - 1; j >= 0; j--)
+      L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { out.push([" ", a[i]]); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push(["-", a[i++]]);
+    else out.push(["+", b[j++]]);
+  }
+  while (i < a.length) out.push(["-", a[i++]]);
+  while (j < b.length) out.push(["+", b[j++]]);
+  return out;
+}
+
+// The proposed change, as removed / added lines with a little context.
+function diffHtml(before, after) {
+  const d = lineDiff(before, after);
+  if (!d) return `<pre>${escapeHtml(after)}</pre>`;
+  const changed = d.map((x) => x[0] !== " ");
+  const keep = d.map((_, k) => changed.slice(Math.max(0, k - 2), k + 3).some(Boolean));
+  let html = "", skipped = false;
+  d.forEach(([kind, text], k) => {
+    if (!keep[k]) { if (!skipped) html += `<div class="diff-gap">…</div>`; skipped = true; return; }
+    skipped = false;
+    const cls = kind === "-" ? "diff-del" : kind === "+" ? "diff-add" : "diff-ctx";
+    html += `<div class="${cls}"><span class="diff-mark">${kind === " " ? "" : kind}</span>${escapeHtml(text) || " "}</div>`;
+  });
+  return `<div class="diff">${html || '<div class="diff-gap">No changes.</div>'}</div>`;
+}
+
+// The agent: perceive (error) -> act (ask for a fix) -> observe (recompile), up
+// to 3 times. The result is only a proposal: the user reviews the change and
+// decides whether to apply it.
 async function runAutoFix(errorObj) {
   const apiKey = getKey();
   openModal("Fix with AI: propose, recompile, repeat", "");
@@ -676,14 +732,15 @@ async function runAutoFix(errorObj) {
     return;
   }
 
-  let source = editor.value;
+  const original = editor.value;
+  let source = original;
   let currentError = errorObj;
   let doneHtml = "";   // finished attempts, kept as we go
+  let last = null;     // { code, result } of the latest attempt
 
   for (let attempt = 1; attempt <= 3; attempt++) {
-    // Perceive/act: show a spinner while we ask Gemini for a fix.
     setModalBody(doneHtml + `<div class="attempt">
-      <div class="attempt-head"><span class="spinner"></span> Attempt ${attempt}: asking Gemini to fix
+      <div class="attempt-head"><span class="spinner"></span> Attempt ${attempt}: asking the AI to fix
       <em>${escapeHtml(currentError.type)}</em> …</div></div>`);
 
     let corrected;
@@ -692,44 +749,80 @@ async function runAutoFix(errorObj) {
     } catch (e) {
       setModalBody(doneHtml + `<div class="attempt fail">
         <div class="attempt-head">Attempt ${attempt}: the AI request failed</div>
-        <p class="muted">${escapeHtml(String(e))}</p></div>`);
+        <p class="muted">${escapeHtml(String(e))}</p></div>` + decisionHtml(last, false));
+      wireDecision(original, last);
       return;
     }
 
-    // Observe: re-validate by re-compiling on the C++ server.
+    // Observe: re-validate by recompiling with the real compiler.
     let result;
     try {
       result = await compileRemote(corrected);
     } catch (e) {
       setModalBody(doneHtml + `<div class="attempt fail">
         <div class="attempt-head">Attempt ${attempt}: recompiling failed</div>
-        <p class="muted">${escapeHtml(String(e))}</p></div>`);
+        <p class="muted">${escapeHtml(String(e))}</p></div>` + decisionHtml(last, false));
+      wireDecision(original, last);
       return;
     }
 
+    last = { code: corrected, result };
     const ok = result.success;
     const next = result.errors[0] || {};
     doneHtml += `<div class="attempt ${ok ? "ok" : "fail"}">
-      <div class="attempt-head">Attempt ${attempt}: ${ok ? "compiles cleanly" : "still has errors"}</div>
-      <pre>${escapeHtml(corrected)}</pre>
-      ${ok ? `<p class="muted">Applied to the editor.</p>`
-           : `<p class="muted">Remaining: <strong>${escapeHtml(next.type || "error")}</strong> — ${escapeHtml(next.message || "")}</p>`}
+      <div class="attempt-head">Attempt ${attempt}: ${ok ? "the compiler accepts it" : "still has errors"}</div>
+      ${diffHtml(original, corrected)}
+      ${ok ? "" : `<p class="muted">Remaining: <strong>${escapeHtml(next.type || "error")}</strong> — ${escapeHtml(next.message || "")}</p>`}
     </div>`;
-    setModalBody(doneHtml);
 
     if (ok) {
-      editor.value = corrected;
-      updateGutter();
-      lastResult = result;
-      renderAll(result);
-      setStatus("ok", "fixed by AI");
+      setModalBody(doneHtml + decisionHtml(last, true));
+      wireDecision(original, last);
       return;
     }
     source = corrected;
     currentError = result.errors[0] || currentError;
   }
   setModalBody(doneHtml +
-    `<p class="muted">Reached the 3-attempt limit. The remaining error may need a human — or a clearer program.</p>`);
+    `<p class="muted">Reached the 3-attempt limit. The remaining error may need a human, or a clearer program.</p>` +
+    decisionHtml(last, false));
+  wireDecision(original, last);
+}
+
+// Apply / keep choice under a proposed fix. Nothing changes until the user picks.
+function decisionHtml(last, accepted) {
+  if (!last) return "";
+  return `<div class="decision" id="fixDecision">
+    <p>${accepted ? "The compiler accepts this version. Apply it to your code?"
+                  : "The last attempt still has errors. You can apply it anyway and keep editing, or keep your code."}</p>
+    <div class="decision-actions">
+      <button id="fixApply" class="${accepted ? "primary" : ""}" type="button">${accepted ? "Apply fix" : "Apply anyway"}</button>
+      <button id="fixKeep" class="text-btn" type="button">Keep my code</button>
+    </div>
+  </div>`;
+}
+
+function wireDecision(original, last) {
+  if (!last || !$("fixApply")) return;
+  const box = $("fixDecision");
+  $("fixKeep").addEventListener("click", () => { $("aiModal").hidden = true; });
+  $("fixApply").addEventListener("click", () => {
+    editor.value = last.code;
+    updateGutter();
+    lastResult = last.result;
+    renderAll(last.result);
+    setStatus(last.result.success ? "ok" : "err", last.result.success ? "AI fix applied" : "AI fix applied, still has errors");
+    box.innerHTML = `<p>Applied to your code.</p>
+      <div class="decision-actions"><button id="fixUndo" type="button">Undo</button>
+      <button id="fixClose" class="text-btn" type="button">Close</button></div>`;
+    $("fixClose").addEventListener("click", () => { $("aiModal").hidden = true; });
+    $("fixUndo").addEventListener("click", () => {
+      editor.value = original;              // setting .value clears the browser's own undo history
+      updateGutter();
+      runCompile();
+      box.innerHTML = `<p>Undone: your original code is back.</p>`;
+    });
+  });
 }
 
 // (3) explainProgram -> plain-English walkthrough
@@ -992,6 +1085,7 @@ $("writeCodeBtn").addEventListener("click", openWriteCode);
   if (savedKey) $("apiKey").value = savedKey;
   fetch("/ai/status").then((r) => r.json()).then((st) => {
     serverAi = !!st.serverKey;
+    serverBackup = !!st.backupKey;
     if (serverAi) $("apiKey").placeholder = "Using the server\u2019s key";
   }).catch(() => { /* older server without /ai: visitors paste their own key */ });
   const params = new URLSearchParams(location.search);

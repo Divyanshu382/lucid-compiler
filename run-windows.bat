@@ -18,6 +18,18 @@ if not defined KEY goto start
 echo  Saved to gemini.key. This file is never uploaded to GitHub.
 
 :start
+if exist deepseek.key goto run
+echo.
+echo  Optional backup: a DeepSeek API key, used only if Gemini does not answer.
+echo  Paste it below and press Enter - or just press Enter to skip.
+echo.
+set "BKEY="
+set /p "BKEY=  DeepSeek API key: "
+if not defined BKEY goto run
+>deepseek.key echo %BKEY%
+echo  Saved to deepseek.key. This file is never uploaded to GitHub.
+
+:run
 echo.
 echo  Starting Lucid - your browser will open http://localhost:8099
 echo  If Windows Firewall asks, click "Allow". Close this window to stop.

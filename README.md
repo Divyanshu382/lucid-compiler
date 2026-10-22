@@ -316,8 +316,14 @@ request that would be sent, so the pipeline is still demonstrable offline.
 `gemini-3.6-flash`, then `gemini-3.8-flash` (list at the top of
 [`web/app.js`](web/app.js)). A busy or unavailable model falls through to the
 next; a free-tier rate limit (HTTP 429) with a short suggested wait is retried
-once after that wait; each request times out after 30 s. Every reply says which
-model answered and how long it took.
+once after that wait; each request times out after 30 s.
+
+**Backup provider.** If the server also has a DeepSeek key (`deepseek.key` in
+the project root, or `DEEPSEEK_API_KEY`; git-ignored like `gemini.key`), then
+when every Gemini model fails, or Gemini rejects its key, the request goes to
+`deepseek-flash` instead. The server converts DeepSeek's reply into Gemini's
+format, so the page treats both the same. Every reply says which model answered,
+how long it took, and whether the backup was used.
 
 ### The auto-fix loop (the "agent")
 
@@ -325,6 +331,11 @@ model answered and how long it took.
 + the compiler's error to Gemini, get corrected source, **re-POST it to
 `/compile`**, and repeat up to 3 times until it compiles or the limit is hit.
 Every attempt is shown. The compiler — not the model — decides success.
+
+Nothing is changed automatically: the dialog shows the proposed change as a
+line-by-line difference (removed lines red, added lines green), and you choose
+**Apply fix** or **Keep my code**. After applying, **Undo** restores your
+original program.
 
 ---
 
@@ -404,3 +415,13 @@ C++ as well, add an `--explain` flag that POSTs the same JSON body to the same
 Gemini endpoint with libcurl and parses the reply with `nlohmann/json`; the
 auto-fix loop becomes: get corrected source, re-run `lucid::compile` in-process,
 repeat up to 3 times.
+
+## Deploying on Vercel
+
+The repository deploys to Vercel as is (`vercel.json`): `web/` is served as
+static files, `vercel-build.sh` compiles the same C++ compiler core into
+`bin/lucid-json` on Vercel's Linux build machine, and three serverless
+functions in `api/` replace lucid-server's routes (`/compile`, `/ai`,
+`/ai/status`). For the AI features, set the environment variables
+`GEMINI_API_KEY` and (optional backup) `DEEPSEEK_API_KEY` in the Vercel
+project settings — never commit the keys.

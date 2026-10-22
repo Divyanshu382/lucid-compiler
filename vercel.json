@@ -1,0 +1,14 @@
+{
+  "framework": null,
+  "buildCommand": "sh vercel-build.sh",
+  "outputDirectory": "web",
+  "functions": {
+    "api/compile.js": { "includeFiles": "bin/**", "maxDuration": 30 },
+    "api/ai.js": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    { "source": "/compile", "destination": "/api/compile" },
+    { "source": "/ai/status", "destination": "/api/ai-status" },
+    { "source": "/ai", "destination": "/api/ai" }
+  ]
+}

@@ -72,8 +72,11 @@ int main(int argc, char** argv) {
     const std::string webDir = findWebDir(argv[0]);
     // gemini.key sits in the project root, next to web/.
     const std::string keyFile = (fs::path(webDir).parent_path() / "gemini.key").string();
-    std::string keySource;
-    const std::string serverKey = lucid::loadServerKey(keyFile, keySource);
+    std::string keySource, backupSource;
+    const std::string serverKey = lucid::loadServerKey("GEMINI_API_KEY", keyFile, keySource);
+    // Backup provider, used by the playground when every Gemini model fails.
+    const std::string backupFile = (fs::path(webDir).parent_path() / "deepseek.key").string();
+    const std::string backupKey = lucid::loadServerKey("DEEPSEEK_API_KEY", backupFile, backupSource);
 
     httplib::Server server;
 
@@ -124,7 +127,8 @@ int main(int argc, char** argv) {
 
     // ---- AI relay -----------------------------------------------------------
     server.Get("/ai/status", [&](const httplib::Request&, httplib::Response& res) {
-        nlohmann::json out = {{"serverKey", !serverKey.empty()}};   // never the key itself
+        nlohmann::json out = {{"serverKey", !serverKey.empty()},     // never the keys themselves
+                              {"backupKey", !backupKey.empty()}};
         res.set_content(out.dump(), "application/json");
     });
 
@@ -142,10 +146,6 @@ int main(int argc, char** argv) {
             if (req.get_header_value("Origin") != expected)
                 return fail(403, "AI requests are only accepted from the playground page itself.");
         }
-        if (serverKey.empty())
-            return fail(503, "This server has no Gemini key. Set GEMINI_API_KEY or create gemini.key, "
-                             "or paste your own key in the playground.");
-
         nlohmann::json body;
         try { body = nlohmann::json::parse(req.body); }
         catch (...) { return fail(400, "Request body must be JSON: { \"model\", \"prompt\" }."); }
@@ -155,8 +155,16 @@ int main(int argc, char** argv) {
         if (prompt.empty()) return fail(400, "Empty prompt.");
         if (prompt.size() > kMaxPromptBytes) return fail(413, "Prompt too large.");
 
+        bool deepseek = lucid::isDeepSeekModel(model);
+        const std::string& key = deepseek ? backupKey : serverKey;
+        if (key.empty())
+            return fail(503, deepseek ? "This server has no DeepSeek backup key (deepseek.key or DEEPSEEK_API_KEY)."
+                                      : "This server has no Gemini key. Set GEMINI_API_KEY or create gemini.key, "
+                                        "or paste your own key in the playground.");
+
         auto start = std::chrono::steady_clock::now();
-        lucid::AiReply reply = lucid::callGemini(model, prompt, serverKey);
+        lucid::AiReply reply = deepseek ? lucid::callDeepSeek(model, prompt, key)
+                                        : lucid::callGemini(model, prompt, key);
         double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         std::printf("AI relay  %-18s -> HTTP %d in %.1fs\n", model.c_str(), reply.status, secs);
         std::fflush(stdout);
@@ -189,6 +197,8 @@ int main(int argc, char** argv) {
                      "             (or set GEMINI_API_KEY / create gemini.key and restart)\n";
     else
         std::cout << "AI features: ON for every visitor, using the key from " << keySource << "\n";
+    if (!backupKey.empty())
+        std::cout << "AI backup:   DeepSeek, used if Gemini fails (key from " << backupSource << ")\n";
     std::cout << "Press Ctrl+C to stop.\n";
 
     if (!server.listen("0.0.0.0", port)) {

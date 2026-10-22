@@ -14,3 +14,7 @@ build/
 
 # Gemini API key for lucid-server - secret, never commit
 gemini.key
+
+# DeepSeek backup key for lucid-server - secret, never commit
+deepseek.key
+bin/

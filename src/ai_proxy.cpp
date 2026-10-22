@@ -159,10 +159,10 @@ bool runCurl(const std::string& config, std::string& output, int& exitCode) {
 
 } // namespace
 
-std::string loadServerKey(const std::string& keyFile, std::string& source) {
-    if (const char* env = std::getenv("GEMINI_API_KEY")) {
+std::string loadServerKey(const std::string& envName, const std::string& keyFile, std::string& source) {
+    if (const char* env = std::getenv(envName.c_str())) {
         std::string k = trim(env);
-        if (!k.empty()) { source = "environment variable GEMINI_API_KEY"; return k; }
+        if (!k.empty()) { source = "environment variable " + envName; return k; }
     }
     std::ifstream in(keyFile);
     std::string line;
@@ -175,7 +175,8 @@ std::string loadServerKey(const std::string& keyFile, std::string& source) {
 }
 
 bool isAllowedModel(const std::string& model) {
-    if (model.size() < 8 || model.size() > 64 || model.rfind("gemini-", 0) != 0) return false;
+    bool known = model.rfind("gemini-", 0) == 0 || model.rfind("deepseek-", 0) == 0;
+    if (model.size() < 8 || model.size() > 64 || !known) return false;
     for (char c : model) {
         bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-';
         if (!ok) return false;
@@ -183,15 +184,13 @@ bool isAllowedModel(const std::string& model) {
     return true;
 }
 
-AiReply callGemini(const std::string& model, const std::string& prompt, const std::string& apiKey) {
-    nlohmann::json payload = {{"contents", {{{"parts", {{{"text", prompt}}}}}}}};
-
+// POSTs `body` to `url` with the given auth header, through curl's stdin config.
+static AiReply postJson(const std::string& url, const std::string& authHeader, const std::string& body) {
     std::string config =
-        "url = " + curlQuote("https://generativelanguage.googleapis.com/v1beta/models/" +
-                             model + ":generateContent") + "\n"
+        "url = " + curlQuote(url) + "\n"
         "header = " + curlQuote("Content-Type: application/json") + "\n"
-        "header = " + curlQuote("x-goog-api-key: " + apiKey) + "\n"
-        "data-binary = " + curlQuote(payload.dump()) + "\n"
+        "header = " + curlQuote(authHeader) + "\n"
+        "data-binary = " + curlQuote(body) + "\n"
         "silent\n"
         "show-error\n"
         "max-time = 28\n"
@@ -209,13 +208,35 @@ AiReply callGemini(const std::string& model, const std::string& prompt, const st
     }
     if (status == 0) {
         return relayError(502, exitCode == 28
-            ? "Gemini did not answer within 28 seconds."
-            : "The server could not reach Gemini (curl exit code " + std::to_string(exitCode) +
+            ? "The AI service did not answer within 28 seconds."
+            : "The server could not reach the AI service (curl exit code " + std::to_string(exitCode) +
               "). Check the internet connection.");
     }
-    std::string body = output.substr(0, at);
-    if (!body.empty() && body.back() == '\n') body.pop_back();
-    return AiReply{status, body};
+    std::string reply = output.substr(0, at);
+    if (!reply.empty() && reply.back() == '\n') reply.pop_back();
+    return AiReply{status, reply};
+}
+
+AiReply callGemini(const std::string& model, const std::string& prompt, const std::string& apiKey) {
+    nlohmann::json payload = {{"contents", {{{"parts", {{{"text", prompt}}}}}}}};
+    return postJson("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent",
+                    "x-goog-api-key: " + apiKey, payload.dump());
+}
+
+AiReply callDeepSeek(const std::string& model, const std::string& prompt, const std::string& apiKey) {
+    nlohmann::json payload = {{"model", model},
+                              {"messages", {{{"role", "user"}, {"content", prompt}}}}};
+    AiReply r = postJson("https://api.deepseek.com/chat/completions",
+                         "Authorization: Bearer " + apiKey, payload.dump());
+    if (r.status != 200) return r;                        // errors pass through unchanged
+    try {
+        auto j = nlohmann::json::parse(r.body);
+        std::string text = j.at("choices").at(0).at("message").at("content").get<std::string>();
+        nlohmann::json asGemini = {{"candidates", {{{"content", {{"parts", {{{"text", text}}}}}}}}}};
+        return AiReply{200, asGemini.dump()};
+    } catch (const std::exception&) {
+        return relayError(502, "DeepSeek returned a reply in an unexpected format.");
+    }
 }
 
 } // namespace lucid

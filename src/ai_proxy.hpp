@@ -23,17 +23,22 @@ struct AiReply {
     std::string body;
 };
 
-// The server's key: the GEMINI_API_KEY environment variable if set, otherwise
-// the first line of `keyFile`. Returns "" when neither exists. `source` is set
-// to a description of where the key came from (never the key itself).
-std::string loadServerKey(const std::string& keyFile, std::string& source);
+// A key held by the server: the environment variable `envName` if set,
+// otherwise the first line of `keyFile`. Returns "" when neither exists.
+// `source` describes where the key came from (never the key itself).
+std::string loadServerKey(const std::string& envName, const std::string& keyFile, std::string& source);
 
-// Accepts only plain model ids such as "gemini-3.5-flash". The id is spliced
-// into the request URL, so anything else is refused.
+// Accepts only plain model ids such as "gemini-3.5-flash" or "deepseek-flash".
+// The id is spliced into the request, so anything else is refused.
 bool isAllowedModel(const std::string& model);
+inline bool isDeepSeekModel(const std::string& model) { return model.rfind("deepseek-", 0) == 0; }
 
 // One generateContent request. Never throws; network failures come back as a
 // 502 with a JSON error body in the same shape Gemini uses.
 AiReply callGemini(const std::string& model, const std::string& prompt, const std::string& apiKey);
+
+// The backup provider. DeepSeek's reply is converted into Gemini's reply
+// shape, so the browser handles both providers in exactly the same way.
+AiReply callDeepSeek(const std::string& model, const std::string& prompt, const std::string& apiKey);
 
 } // namespace lucid

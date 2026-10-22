@@ -462,3 +462,23 @@ button.ai-inline { margin: 0 0 10px -8px; color: var(--accent); }
   .opt-cols { grid-template-columns: 1fr; }
   .brand-sub { display: none; }
 }
+
+/* ---- reviewing an AI fix before applying it ---------------------------------- */
+.diff {
+  margin: 8px 0 6px; padding: 6px 0; font: 12.5px/1.6 var(--mono); overflow-x: auto;
+  border: 1px solid var(--rule-soft); border-radius: 4px; background: var(--surface);
+}
+.diff > div { white-space: pre; padding: 0 12px 0 0; }
+.diff-mark { display: inline-block; width: 22px; text-align: center; color: var(--muted); }
+.diff-del { background: var(--err-soft); color: var(--err); }
+.diff-add { background: var(--accent-soft); color: var(--ink); }
+.diff-add .diff-mark { color: var(--accent); font-weight: 600; }
+.diff-del .diff-mark { color: var(--err); font-weight: 600; }
+.diff-ctx { color: var(--ink-2); }
+.diff-gap { color: var(--muted); padding-left: 22px !important; }
+.decision {
+  margin-top: 12px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--surface-2);
+}
+.decision p { margin: 0 0 10px; }
+.decision-actions { display: flex; gap: 8px; align-items: center; }
