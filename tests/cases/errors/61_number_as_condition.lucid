@@ -1,7 +1,0 @@
-// expect-exit: 1
-// expect-output: 
-// expect-errors: semantic:ConditionNotBoolean | semantic:ConditionNotBoolean | semantic:TypeMismatch
-int n = 4;
-if (n % 2) { print("odd"); }
-while (n) { n--; }
-bool z = !n;

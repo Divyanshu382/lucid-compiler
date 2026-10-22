@@ -40,6 +40,7 @@ private:
     bool atLineStart() const;                    // only blanks before pos_ on this line             // “ or ” pasted from a word processor
     void reportNonAscii(int startLine, int startCol);
     Token makeString();
+    Token makeCharLiteral();
     Token makeNumber(int startLine, int startCol);
     Token makeIdentifierOrKeyword(int startLine, int startCol);
 };

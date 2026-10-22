@@ -33,7 +33,8 @@ double micros(std::chrono::steady_clock::time_point start) {
 // brackets. No real program comes close.
 static constexpr int kMaxTreeDepth = 2000;
 
-static nlohmann::json compileImpl(const std::string& source) {
+static nlohmann::json compileImpl(const std::string& source, const std::string& input,
+                                  const std::function<bool(std::string&)>& moreInput = nullptr) {
     using nlohmann::json;
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
@@ -122,7 +123,7 @@ static nlohmann::json compileImpl(const std::string& source) {
 
     // ---- Phase 6: Interpreter (runs on the optimized tree) ----
     ts = Clock::now();
-    Interpreter interp(source, errors);
+    Interpreter interp(source, errors, input, moreInput);
     std::vector<std::string> out = interp.run(*program);
     timings["interpreter"] = micros(ts);
     for (const auto& line : out) result["output"].push_back(line);
@@ -131,16 +132,17 @@ static nlohmann::json compileImpl(const std::string& source) {
     return finish();
 }
 
-nlohmann::json compile(const std::string& source) {
+nlohmann::json compile(const std::string& source, const std::string& input,
+                       const std::function<bool(std::string&)>& moreInput) {
     nlohmann::json result;
-    runOnLargeStack([&] { result = compileImpl(source); });
+    runOnLargeStack([&] { result = compileImpl(source, input, moreInput); });
     return result;
 }
 
-std::string compileToJsonText(const std::string& source) {
+std::string compileToJsonText(const std::string& source, const std::string& input) {
     std::string text;
     runOnLargeStack([&] {
-        text = compileImpl(source).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        text = compileImpl(source, input).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     });
     return text;
 }

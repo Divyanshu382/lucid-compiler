@@ -19,6 +19,9 @@ std::string Quad::text() const {
     if (op == "call")    return result + " = call " + arg1 + ", " + arg2;
     if (op == "ret")     return arg1.empty() ? "return" : "return " + arg1;
     if (op == "print")   return "print " + arg1;
+    if (op == "out")     return "cout << " + arg1;
+    if (op == "read")    return "cin >> " + result;
+    if (op == "cast")    return result + " = (" + arg2 + ") " + arg1;
     if (op == "func")    return "func " + arg1 + ":";
     if (op == "endfunc") return "endfunc " + arg1;
     return result + " = " + arg1 + " " + op + " " + arg2;   // binary operator
@@ -89,6 +92,10 @@ void IRGenerator::genStmt(const Node& n) {
         }
         case NodeKind::Print: {
             const auto& p = static_cast<const Print&>(n);
+            if (p.stream) {                          // cout << a << b: one output per value
+                for (const auto& a : p.args) emit("out", genExpr(*a));
+                break;
+            }
             if (p.args.size() == 1) {
                 emit("print", genExpr(*p.args[0]));
             } else {                     // print(a, b): built-in call with n params
@@ -103,6 +110,14 @@ void IRGenerator::genStmt(const Node& n) {
         case NodeKind::Return: {
             const auto& r = static_cast<const Return&>(n);
             emit("ret", r.value ? genExpr(*r.value) : "");
+            break;
+        }
+
+        case NodeKind::Read: {
+            for (const auto& name : static_cast<const Read&>(n).names) {
+                std::string irName = resolveName(name);
+                emit("read", "", "", irName.empty() ? name : irName);
+            }
             break;
         }
 
@@ -171,11 +186,10 @@ void IRGenerator::genStmt(const Node& n) {
         case NodeKind::FuncDecl: {
             const auto& f = static_cast<const FuncDecl&>(n);
             emit("func", f.name);
-            auto savedScopes = std::move(scopes_);
-            scopes_.assign(1, {});                      // functions cannot see globals
+            scopes_.emplace_back();                     // parameters; globals stay visible
             for (const auto& p : f.params) emit("recv", "", "", declareName(p.name));
             genBlock(*f.body);
-            scopes_ = std::move(savedScopes);
+            scopes_.pop_back();
             emit("endfunc", f.name);
             break;
         }
@@ -210,6 +224,14 @@ std::string IRGenerator::genExpr(const Node& n) {
             const std::string& name = static_cast<const Identifier&>(n).name;
             std::string irName = resolveName(name);
             return irName.empty() ? name : irName;
+        }
+
+        case NodeKind::Cast: {
+            const auto& c = static_cast<const Cast&>(n);
+            std::string a = genExpr(*c.operand);
+            std::string t = newTemp();
+            emit("cast", a, c.type, t);
+            return t;
         }
 
         // Short-circuit code: the right operand of && / || is only evaluated

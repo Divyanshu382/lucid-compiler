@@ -1,0 +1,10 @@
+// expect-exit: 0
+// expect-output: 1|0|5|1|16|5|ab
+// expect-errors: 
+cout << int(true) << endl;
+cout << (int)false << endl;
+cout << static_cast<int>(5) << endl;
+cout << bool(7) << endl;
+cout << (1 << 4) << endl;
+cout << (20 >> 2) << endl;
+cout << string("a") + "b" << endl;

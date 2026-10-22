@@ -14,6 +14,7 @@
 // ============================================================================
 #pragma once
 
+#include <functional>
 #include <string>
 #include "../third_party/json.hpp"
 
@@ -21,10 +22,13 @@ namespace lucid {
 
 // Compile `source` and return the full result document (never throws for
 // ordinary program errors — those live in the "errors" array).
-nlohmann::json compile(const std::string& source);
+// `input` is the program's standard input, read by cin. When it runs out,
+// `moreInput` (optional) supplies more, a line at a time; false at the end.
+nlohmann::json compile(const std::string& source, const std::string& input = "",
+                       const std::function<bool(std::string&)>& moreInput = nullptr);
 
 // compile() serialised to JSON text, with the serialisation also done on the
 // large stack (the JSON writer is recursive too). Used by the server.
-std::string compileToJsonText(const std::string& source);
+std::string compileToJsonText(const std::string& source, const std::string& input = "");
 
 } // namespace lucid

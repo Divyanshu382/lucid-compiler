@@ -1,0 +1,7 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:UndeclaredVariable
+int f(int n) {
+    return n + limit;      // declared below: not visible yet, as in C++
+}
+int limit = 10;

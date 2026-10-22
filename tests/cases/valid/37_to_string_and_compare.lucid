@@ -1,0 +1,8 @@
+// expect-exit: 0
+// expect-output: n = 42|1|0|1
+// expect-errors: 
+int n = 42;
+cout << "n = " + to_string(n) << endl;
+cout << (string("apple") < "banana") << endl;
+cout << (string("b") < "a") << endl;
+cout << ("x" == "x") << endl;

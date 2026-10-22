@@ -1,4 +1,4 @@
-int x = 5;
-if (x) {
-    print("no");
+string name = "Lucid";
+if (name) {
+    cout << "a string is not a condition, even in C++" << endl;
 }

@@ -1,0 +1,5 @@
+// expect-exit: 1
+// expect-output: 
+// expect-errors: semantic:AssignToConst
+const int n = 5;
+n = 6;

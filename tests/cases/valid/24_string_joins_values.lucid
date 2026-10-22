@@ -1,6 +1,0 @@
-// expect-exit: 0
-// expect-output: n = 5, ok = true
-// expect-errors: 
-int n = 5;
-bool ok = true;
-print("n = " + n + ", ok = " + ok);

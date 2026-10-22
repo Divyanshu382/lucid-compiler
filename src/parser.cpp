@@ -96,11 +96,8 @@ void Parser::drainPending(std::vector<NodePtr>& into) {
 
 NodePtr Parser::topLevel() {
     if (check(TokenType::KwFunc)) return funcDecl();
-    if (check(TokenType::Identifier) && peek().value == "using" &&
-        tokens_[pos_ + 1].type == TokenType::Identifier && tokens_[pos_ + 1].value == "namespace") {
-        // `using namespace std;` from a C++ program: nothing to import in Lucid.
-        while (!isAtEnd() && !check(TokenType::Semicolon)) advance();
-        match(TokenType::Semicolon);
+    if (check(TokenType::Identifier) && peek().value == "using") {
+        skipUsing();
         return nullptr;
     }
     if (isCFuncStart()) {
@@ -177,6 +174,7 @@ NodePtr Parser::statement() {
         case TokenType::KwBool:
             if (isCFuncStart()) return skipNestedFunction();
             return varDecl();
+        case TokenType::KwConst:    return varDecl();
         case TokenType::KwVoid:
             if (isCFuncStart()) return skipNestedFunction();
             error(peek(), "'void' can only be used as a function's return type");
@@ -190,7 +188,11 @@ NodePtr Parser::statement() {
         case TokenType::KwPrint:  return printStatement();
         case TokenType::KwReturn: return returnStatement();
         case TokenType::KwFunc:   return skipNestedFunction();
-        case TokenType::Identifier: return simpleStatement();
+        case TokenType::Identifier:
+            if (peek().value == "cout")  return coutStatement();
+            if (peek().value == "cin")   return cinStatement();
+            if (peek().value == "using") return skipUsing();
+            return simpleStatement();
         case TokenType::PlusPlus:
         case TokenType::MinusMinus: {          // ++x;  --x;
             auto node = assignmentNoSemi();
@@ -223,16 +225,24 @@ std::unique_ptr<Block> Parser::block() {
 }
 
 NodePtr Parser::varDecl() {
+    bool isConst = match(TokenType::KwConst);
     std::string ty = typeName();
-    NodePtr first = declarator(ty);
-    while (match(TokenType::Comma)) pending_.push_back(declarator(ty));   // int a, b, c;
+    auto mark = [&](NodePtr n) {
+        auto* d = static_cast<VarDecl*>(n.get());
+        d->isConst = isConst;
+        return n;
+    };
+    NodePtr first = mark(declarator(ty, isConst));
+    while (match(TokenType::Comma)) pending_.push_back(mark(declarator(ty, isConst)));   // int a, b, c;
     expect(TokenType::Semicolon, "';'");
     return first;
 }
 
 // One `name` or `name = value` inside a declaration.
-NodePtr Parser::declarator(const std::string& type) {
+NodePtr Parser::declarator(const std::string& type, bool isConst) {
     const Token& name = expect(TokenType::Identifier, "a variable name");
+    if (isConst && !check(TokenType::Assign))
+        error(peek(), "a const variable must be given a value: const " + type + " " + name.value + " = ...;");
     auto node = std::make_unique<VarDecl>(name.line);
     node->declType = type;
     node->name = name.value;
@@ -258,12 +268,6 @@ NodePtr Parser::simpleStatement() {
         return node;
     }
     const Token& name = advance();  // the identifier
-    // Common C++ habits get a direct explanation instead of a generic error.
-    if (name.value == "cout" || (name.value == "std" && check(TokenType::Colon)))
-        error(name, "Lucid prints with print(...), not cout: write print(x); "
-                    "or print(\"x =\", x); for several values");
-    if (name.value == "cin")
-        error(name, "Lucid has no keyboard input (cin): give the variable its value in the program");
     if (check(TokenType::LParen)) {
         auto call = finishCall(name);
         expect(TokenType::Semicolon, "';'");
@@ -278,7 +282,7 @@ NodePtr Parser::ifStatement() {
     expect(TokenType::LParen, "'(' after 'if'");
     auto cond = expression();
     expect(TokenType::RParen, "')'");
-    auto thenB = block();
+    auto thenB = bodyBlock();
     std::unique_ptr<Block> elseB;
     if (match(TokenType::KwElse)) {
         if (check(TokenType::KwIf)) {
@@ -287,7 +291,7 @@ NodePtr Parser::ifStatement() {
             elseB = std::make_unique<Block>(nested);
             elseB->statements.push_back(ifStatement());
         } else {
-            elseB = block();
+            elseB = bodyBlock();
         }
     }
     auto node = std::make_unique<If>(ln);
@@ -304,7 +308,8 @@ bool Parser::isCompoundAssign(TokenType t) const {
 }
 
 bool Parser::isTypeStart() const {
-    return check(TokenType::KwInt) || check(TokenType::KwString) || check(TokenType::KwBool);
+    return check(TokenType::KwInt) || check(TokenType::KwString) || check(TokenType::KwBool) ||
+           check(TokenType::KwConst);
 }
 
 // `x++` / `++x` (and --) desugar to `x = x + 1` (or - 1).
@@ -393,7 +398,7 @@ NodePtr Parser::forStatement() {
     }
     expect(TokenType::RParen, "')'");
 
-    auto body = block();
+    auto body = bodyBlock();
 
     auto loop = std::make_unique<While>(ln);
     loop->cond = std::move(cond);
@@ -414,7 +419,7 @@ NodePtr Parser::whileStatement() {
     expect(TokenType::LParen, "'(' after 'while'");
     auto cond = expression();
     expect(TokenType::RParen, "')'");
-    auto body = block();
+    auto body = bodyBlock();
     auto node = std::make_unique<While>(ln);
     node->cond = std::move(cond);
     node->body = std::move(body);
@@ -485,10 +490,61 @@ void Parser::parseParams(FuncDecl& fn) {
     expect(TokenType::RParen, "')'");
 }
 
+// A body: a { block }, or a single statement as C++ allows
+// (if (x > 0) cout << x;). A single statement still gets its own scope.
+std::unique_ptr<Block> Parser::bodyBlock() {
+    if (check(TokenType::LBrace)) return block();
+    Nest nest(*this);
+    auto blk = std::make_unique<Block>(peek().line);
+    blk->statements.push_back(statement());
+    drainPending(blk->statements);
+    return blk;
+}
+
+// cout << a << b << endl;   Each value is parsed above << level, so
+// cout << a + b works and cout << (a < b) needs brackets, exactly as in C++.
+NodePtr Parser::coutStatement() {
+    const Token& kw = advance();   // cout
+    auto node = std::make_unique<Print>(kw.line);
+    node->stream = true;
+    if (!check(TokenType::LShift)) error(peek(), "expected '<<' after 'cout'");
+    while (match(TokenType::LShift)) {
+        if (check(TokenType::Identifier) && peek().value == "endl") {
+            auto nl = std::make_unique<StringLiteral>(peek().line);
+            nl->value = "\n";
+            advance();
+            node->args.push_back(std::move(nl));
+        } else {
+            node->args.push_back(term());
+        }
+    }
+    expect(TokenType::Semicolon, "';'");
+    return node;
+}
+
+// cin >> a >> b;  each target must be a variable.
+NodePtr Parser::cinStatement() {
+    const Token& kw = advance();   // cin
+    auto node = std::make_unique<Read>(kw.line);
+    if (!check(TokenType::RShift)) error(peek(), "expected '>>' after 'cin'");
+    while (match(TokenType::RShift))
+        node->names.push_back(expect(TokenType::Identifier, "a variable name after '>>'").value);
+    expect(TokenType::Semicolon, "';'");
+    return node;
+}
+
+// using namespace std;  /  using std::cout;   Lucid has one namespace.
+NodePtr Parser::skipUsing() {
+    int ln = peek().line;
+    while (!isAtEnd() && !check(TokenType::Semicolon)) advance();
+    expect(TokenType::Semicolon, "';'");
+    return std::make_unique<Block>(ln);
+}
+
 NodePtr Parser::doWhileStatement() {
     int ln = peek().line;
     advance();  // 'do'
-    auto body = block();
+    auto body = bodyBlock();
     expect(TokenType::KwWhile, "'while' after the do-block");
     expect(TokenType::LParen, "'(' after 'while'");
     auto cond = expression();
@@ -565,9 +621,22 @@ NodePtr Parser::equality() {
 }
 
 NodePtr Parser::comparison() {
-    auto left = term();
+    auto left = shift();
     while (check(TokenType::Lt) || check(TokenType::Gt) ||
            check(TokenType::Le) || check(TokenType::Ge)) {
+        Token op = advance();
+        auto right = shift();
+        auto node = std::make_unique<BinaryOp>(op.line);
+        node->op = op.value; node->left = std::move(left); node->right = std::move(right);
+        left = std::move(node);
+    }
+    return left;
+}
+
+// << and >> on ints: bit shifts, binding tighter than comparisons (as in C++).
+NodePtr Parser::shift() {
+    auto left = term();
+    while (check(TokenType::LShift) || check(TokenType::RShift)) {
         Token op = advance();
         auto right = term();
         auto node = std::make_unique<BinaryOp>(op.line);
@@ -601,8 +670,28 @@ NodePtr Parser::factor() {
     return left;
 }
 
+// An explicit conversion written in any of C++'s forms.
+static NodePtr makeCast(const std::string& type, NodePtr operand, int line) {
+    auto node = std::make_unique<Cast>(line);
+    node->type = type;
+    node->operand = std::move(operand);
+    return node;
+}
+
+static bool isTypeToken(TokenType t) {
+    return t == TokenType::KwInt || t == TokenType::KwBool || t == TokenType::KwString;
+}
+
 NodePtr Parser::unary() {
     Nest nest(*this);
+    // C-style cast: (int) x
+    if (check(TokenType::LParen) && pos_ + 2 < tokens_.size() && isTypeToken(tokens_[pos_ + 1].type) &&
+        tokens_[pos_ + 2].type == TokenType::RParen) {
+        int ln = advance().line;
+        std::string type = advance().value;
+        advance();
+        return makeCast(type, unary(), ln);
+    }
     if (check(TokenType::Not) || check(TokenType::Minus)) {
         Token op = advance();
         auto operand = unary();
@@ -656,7 +745,26 @@ NodePtr Parser::primary() {
             node->value = (tok.type == TokenType::KwTrue);
             return node;
         }
+        case TokenType::KwInt:
+        case TokenType::KwBool:
+        case TokenType::KwString: {                 // functional cast: int(x), string("abc")
+            advance();
+            expect(TokenType::LParen, "'(' after '" + tok.value + "' (a conversion such as int(x))");
+            auto operand = expression();
+            expect(TokenType::RParen, "')'");
+            return makeCast(tok.value, std::move(operand), tok.line);
+        }
         case TokenType::Identifier: {
+            if (tok.value == "static_cast" && tokens_[pos_ + 1].type == TokenType::Lt) {   // static_cast<int>(x)
+                advance(); advance();
+                if (!isTypeToken(peek().type)) error(peek(), "expected int, bool or string in static_cast<...>");
+                std::string type = advance().value;
+                expect(TokenType::Gt, "'>'");
+                expect(TokenType::LParen, "'('");
+                auto operand = expression();
+                expect(TokenType::RParen, "')'");
+                return makeCast(type, std::move(operand), tok.line);
+            }
             advance();
             if (check(TokenType::LParen)) return finishCall(tok);
             auto node = std::make_unique<Identifier>(tok.line);

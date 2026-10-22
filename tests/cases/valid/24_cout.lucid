@@ -1,0 +1,9 @@
+// expect-exit: 0
+// expect-output: x = 3, ok = 1|a b|done
+// expect-errors: 
+int x = 3;
+bool ok = true;
+cout << "x = " << x << ", ok = " << ok << endl;   // bool prints as 1
+cout << "a" << ' ' << "b" << '\n';
+cout << "do";
+cout << "ne" << endl;

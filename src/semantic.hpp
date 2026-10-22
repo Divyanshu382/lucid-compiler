@@ -41,7 +41,7 @@ private:
         std::string returnTypeName;
         int line;
     };
-    struct VarEntry { Ty type; };
+    struct VarEntry { Ty type; bool isConst = false; };
 
     const std::string& source_;
     ErrorList& errors_;
@@ -59,7 +59,8 @@ private:
     // scope management
     void pushScope(const std::string& label);
     void popScope();
-    bool declareVar(const std::string& name, Ty type);   // false if redeclared here
+    bool declareVar(const std::string& name, Ty type, bool isConst = false);   // false if redeclared here
+    const VarEntry* findVar(const std::string& name) const;
     bool lookupVar(const std::string& name, Ty& out) const;
     std::vector<std::string> knownVarNames() const;
 
@@ -70,6 +71,10 @@ private:
     Ty checkExpr(Node* expr);
     Ty checkBinary(BinaryOp* bin);
     Ty checkCall(Call* call);
+    // C++'s implicit int <-> bool conversions, made explicit: wraps the
+    // expression in `slot` in a Cast node. False if no such conversion exists.
+    bool coerce(NodePtr& slot, Ty from, Ty to);
+    Ty checkCondition(NodePtr& cond, const std::string& keyword, int line);
 
     void reportTypeError(const std::string& type, const std::string& msg, int line);
     static Ty tyFromName(const std::string& name);

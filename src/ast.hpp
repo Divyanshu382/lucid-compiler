@@ -20,8 +20,8 @@ namespace lucid {
 enum class NodeKind {
     Program, Block,
     VarDecl, Assign, If, While, Print, FuncDecl, Return,
-    Break, Continue,
-    Call, BinaryOp, UnaryOp, Conditional,
+    Break, Continue, Read,
+    Call, BinaryOp, UnaryOp, Conditional, Cast,
     Identifier, IntLiteral, StringLiteral, BoolLiteral
 };
 
@@ -39,6 +39,8 @@ inline const char* nodeKindName(NodeKind k) {
         case NodeKind::Break:         return "Break";
         case NodeKind::Continue:      return "Continue";
         case NodeKind::Conditional:   return "Conditional";
+        case NodeKind::Read:          return "Read";
+        case NodeKind::Cast:          return "Cast";
         case NodeKind::Call:          return "Call";
         case NodeKind::BinaryOp:      return "BinaryOp";
         case NodeKind::UnaryOp:       return "UnaryOp";
@@ -102,10 +104,11 @@ struct Block : Node {
 struct VarDecl : Node {
     std::string declType;   // "int" | "string" | "bool"
     std::string name;
-    NodePtr init;           // required initializer
+    NodePtr init;           // initializer (the type's default when none was written)
+    bool isConst = false;   // const int n = 5;
     explicit VarDecl(int ln) : Node(NodeKind::VarDecl, ln) {}
     nlohmann::json toJson() const override {
-        auto j = nodeBase(kind, "VarDecl: " + declType + " " + name, line);
+        auto j = nodeBase(kind, std::string("VarDecl: ") + (isConst ? "const " : "") + declType + " " + name, line);
         if (init) j["children"].push_back(init->toJson());
         return j;
     }
@@ -154,12 +157,15 @@ struct While : Node {
     }
 };
 
-// print(a, b, ...) prints its values on one line, separated by spaces.
+// Output. `cout << a << b;` (stream = true) writes each value with no
+// separator, exactly as C++ does; Lucid's older print(a, b) writes the values
+// separated by spaces and ends the line.
 struct Print : Node {
     std::vector<NodePtr> args;
+    bool stream = false;
     explicit Print(int ln) : Node(NodeKind::Print, ln) {}
     nlohmann::json toJson() const override {
-        auto j = nodeBase(kind, "Print", line);
+        auto j = nodeBase(kind, stream ? "cout" : "Print", line);
         for (const auto& a : args) j["children"].push_back(a->toJson());
         return j;
     }
@@ -207,7 +213,31 @@ struct Continue : Node {
     nlohmann::json toJson() const override { return nodeBase(kind, "Continue", line); }
 };
 
+// cin >> a >> b;  reads whitespace-separated values from the program's input.
+struct Read : Node {
+    std::vector<std::string> names;
+    explicit Read(int ln) : Node(NodeKind::Read, ln) {}
+    nlohmann::json toJson() const override {
+        std::string label = "cin";
+        for (const auto& n : names) label += " >> " + n;
+        return nodeBase(kind, label, line);
+    }
+};
+
 // ---- Expressions ---------------------------------------------------------
+// An implicit conversion made explicit by the semantic analyser, e.g. the
+// bool in `n + true` becomes (int) true. Only int <-> bool, as in C++.
+struct Cast : Node {
+    std::string type;        // target: "int" | "bool"
+    NodePtr operand;
+    explicit Cast(int ln) : Node(NodeKind::Cast, ln) {}
+    nlohmann::json toJson() const override {
+        auto j = nodeBase(kind, "(" + type + ")", line);
+        if (operand) j["children"].push_back(operand->toJson());
+        return j;
+    }
+};
+
 // cond ? thenExpr : elseExpr
 struct Conditional : Node {
     NodePtr cond, thenExpr, elseExpr;
@@ -330,6 +360,7 @@ inline std::vector<const Node*> childrenOf(const Node& n) {
             add(b.left.get()); add(b.right.get()); break;
         }
         case NodeKind::UnaryOp:  add(static_cast<const UnaryOp&>(n).operand.get()); break;
+        case NodeKind::Cast:     add(static_cast<const Cast&>(n).operand.get()); break;
         case NodeKind::Conditional: {
             auto& c = static_cast<const Conditional&>(n);
             add(c.cond.get()); add(c.thenExpr.get()); add(c.elseExpr.get()); break;

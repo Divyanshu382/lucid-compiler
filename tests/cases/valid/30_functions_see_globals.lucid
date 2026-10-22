@@ -1,0 +1,8 @@
+// expect-exit: 0
+// expect-output: 11
+// expect-errors: 
+int limit = 10;
+int f(int n) {
+    return n + limit;      // globals declared above are visible, as in C++
+}
+cout << f(1) << endl;

@@ -58,13 +58,6 @@ std::string suggestName(const std::string& target, const std::vector<std::string
     return "";
 }
 
-// Lucid conditions must be bool. C++ also accepts numbers (non-zero = true),
-// so say so and show the explicit comparison to write instead.
-static std::string conditionHint(Ty t) {
-    if (t == Ty::Int)    return " Unlike C++, Lucid does not treat numbers as true/false: compare instead, e.g. (x != 0).";
-    if (t == Ty::String) return " Compare the string instead, e.g. (s != \"\").";
-    return "";
-}
 
 // ---- setup ---------------------------------------------------------------
 SemanticAnalyzer::SemanticAnalyzer(const std::string& source, ErrorList& errors)
@@ -84,11 +77,44 @@ void SemanticAnalyzer::popScope() {
     scopeLabels_.pop_back();
 }
 
-bool SemanticAnalyzer::declareVar(const std::string& name, Ty type) {
+bool SemanticAnalyzer::declareVar(const std::string& name, Ty type, bool isConst) {
     auto& scope = scopes_.back();
     if (scope.count(name)) return false;   // already declared in this scope
-    scope[name] = VarEntry{type};
+    scope[name] = VarEntry{type, isConst};
     return true;
+}
+
+const SemanticAnalyzer::VarEntry* SemanticAnalyzer::findVar(const std::string& name) const {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+        auto found = it->find(name);
+        if (found != it->end()) return &found->second;
+    }
+    return nullptr;
+}
+
+bool SemanticAnalyzer::coerce(NodePtr& slot, Ty from, Ty to) {
+    if (from == to || from == Ty::Error || to == Ty::Error) return true;
+    bool numeric = (from == Ty::Int || from == Ty::Bool) && (to == Ty::Int || to == Ty::Bool);
+    if (!numeric) return false;
+    auto cast = std::make_unique<Cast>(slot->line);
+    cast->type = tyName(to);
+    cast->operand = std::move(slot);
+    slot = std::move(cast);
+    return true;
+}
+
+// if / while / do / for / ?: conditions. As in C++, an int is accepted
+// (non-zero means true) and converted; a string is not.
+Ty SemanticAnalyzer::checkCondition(NodePtr& cond, const std::string& keyword, int line) {
+    Ty c = checkExpr(cond.get());
+    if (c == Ty::Error) return c;
+    if (!coerce(cond, c, Ty::Bool)) {
+        reportTypeError("ConditionNotBoolean",
+            "The condition of '" + keyword + "' must be a bool or an int, but it is " +
+            std::string(tyName(c)) + "." + (c == Ty::String ? " Compare the string instead, e.g. (s != \"\")." : ""), line);
+        return Ty::Error;
+    }
+    return Ty::Bool;
 }
 
 bool SemanticAnalyzer::lookupVar(const std::string& name, Ty& out) const {
@@ -161,15 +187,10 @@ void SemanticAnalyzer::checkBlock(Block* block, bool newScope, const std::string
 }
 
 void SemanticAnalyzer::checkFuncBody(FuncDecl* fn) {
-    // Functions get an ISOLATED scope chain: only their parameters (and other
-    // functions, via funcs_) are visible — never global or enclosing locals.
-    // This mirrors how the interpreter scopes a call, so a program that passes
-    // the type check will not hit a surprise "undeclared" at runtime.
-    auto savedScopes = std::move(scopes_);
-    auto savedLabels = std::move(scopeLabels_);
-    scopes_.clear();
-    scopeLabels_.clear();
-
+    // As in C++, a function sees its parameters, its own locals, and the
+    // global variables declared above it in the file (functions are only
+    // declared at the top level, so the scope chain here is just the global
+    // scope, holding exactly the globals declared so far).
     pushScope("func " + fn->name);
     for (const auto& p : fn->params) {
         Ty pty = tyFromName(p.type);
@@ -190,9 +211,6 @@ void SemanticAnalyzer::checkFuncBody(FuncDecl* fn) {
     loopDepth_ = savedLoopDepth;
     returnStack_.pop_back();
     popScope();
-
-    scopes_ = std::move(savedScopes);
-    scopeLabels_ = std::move(savedLabels);
 }
 
 void SemanticAnalyzer::checkStatement(Node* stmt) {
@@ -201,18 +219,18 @@ void SemanticAnalyzer::checkStatement(Node* stmt) {
             auto* d = static_cast<VarDecl*>(stmt);
             Ty declTy = tyFromName(d->declType);
             Ty initTy = checkExpr(d->init.get());
-            if (initTy != Ty::Error && initTy != declTy) {
+            if (!coerce(d->init, initTy, declTy)) {
                 reportTypeError("TypeMismatch",
                     "Cannot initialize '" + d->name + "' of type " + d->declType +
                     " with a value of type " + tyName(initTy) + ".", d->line);
             }
-            if (!declareVar(d->name, declTy)) {
+            if (!declareVar(d->name, declTy, d->isConst)) {
                 reportTypeError("Redeclaration",
                     "Variable '" + d->name + "' is already declared in this scope.", d->line);
             }
             variablesSnapshot_.push_back({
                 {"name", d->name}, {"type", d->declType},
-                {"scope", scopeLabels_.back()}, {"kind", "variable"}, {"line", d->line}
+                {"scope", scopeLabels_.back()}, {"kind", d->isConst ? "constant" : "variable"}, {"line", d->line}
             });
             break;
         }
@@ -227,7 +245,9 @@ void SemanticAnalyzer::checkStatement(Node* stmt) {
                 varTy = Ty::Error;
             }
             Ty valTy = checkExpr(a->value.get());
-            if (varTy != Ty::Error && valTy != Ty::Error && varTy != valTy) {
+            if (const VarEntry* v = findVar(a->name); v && v->isConst) {
+                reportTypeError("AssignToConst", "Cannot assign to '" + a->name + "' because it is const.", a->line);
+            } else if (varTy != Ty::Error && valTy != Ty::Error && !coerce(a->value, valTy, varTy)) {
                 reportTypeError("TypeMismatch",
                     "Cannot assign a value of type " + std::string(tyName(valTy)) +
                     " to '" + a->name + "' of type " + tyName(varTy) + ".", a->line);
@@ -236,10 +256,7 @@ void SemanticAnalyzer::checkStatement(Node* stmt) {
         }
         case NodeKind::If: {
             auto* i = static_cast<If*>(stmt);
-            Ty c = checkExpr(i->cond.get());
-            if (c != Ty::Error && c != Ty::Bool)
-                reportTypeError("ConditionNotBoolean",
-                    "The condition of 'if' must be bool, but it is " + std::string(tyName(c)) + "." + conditionHint(c), i->line);
+            checkCondition(i->cond, "if", i->line);
             checkBlock(i->thenBlock.get(), true, "if");
             if (i->elseBlock) checkBlock(i->elseBlock.get(), true, "else");
             break;
@@ -247,11 +264,7 @@ void SemanticAnalyzer::checkStatement(Node* stmt) {
         case NodeKind::While: {
             auto* w = static_cast<While*>(stmt);
             const char* kw = w->doWhile ? "do-while" : (w->step ? "for" : "while");
-            Ty c = checkExpr(w->cond.get());
-            if (c != Ty::Error && c != Ty::Bool)
-                reportTypeError("ConditionNotBoolean",
-                    "The condition of '" + std::string(kw) + "' must be bool, but it is " +
-                    std::string(tyName(c)) + "." + conditionHint(c), w->line);
+            checkCondition(w->cond, kw, w->line);
             ++loopDepth_;
             checkBlock(w->body.get(), true, kw);
             --loopDepth_;
@@ -292,10 +305,24 @@ void SemanticAnalyzer::checkStatement(Node* stmt) {
                     reportTypeError("MissingReturnValue",
                         "This function must return a " + std::string(tyName(want)) +
                         " value, but 'return;' gives none.", r->line);
-                } else if (valTy != Ty::Error && want != Ty::Error && valTy != want) {
+                } else if (valTy != Ty::Error && want != Ty::Error && !coerce(r->value, valTy, want)) {
                     reportTypeError("ReturnTypeMismatch",
                         "Function should return " + std::string(tyName(want)) +
                         " but this returns " + tyName(valTy) + ".", r->line);
+                }
+            }
+            break;
+        }
+        case NodeKind::Read: {
+            auto* rd = static_cast<Read*>(stmt);
+            for (const auto& name : rd->names) {
+                const VarEntry* v = findVar(name);
+                if (!v) {
+                    std::string hint = suggestName(name, knownVarNames());
+                    reportTypeError("UndeclaredVariable", "cin reads into '" + name + "', which is not declared." +
+                        (hint.empty() ? "" : " Did you mean '" + hint + "'?"), rd->line);
+                } else if (v->isConst) {
+                    reportTypeError("AssignToConst", "cin cannot read into '" + name + "' because it is const.", rd->line);
                 }
             }
             break;
@@ -342,41 +369,42 @@ Ty SemanticAnalyzer::checkExpr(Node* expr) {
             auto* u = static_cast<UnaryOp*>(expr);
             Ty t = checkExpr(u->operand.get());
             if (t == Ty::Error) return Ty::Error;
-            if (u->op == "!") {
-                if (t != Ty::Bool) {
-                    reportTypeError("TypeMismatch",
-                        "Operator '!' needs a bool but got " + std::string(tyName(t)) + "." +
-                        (t == Ty::Int ? " To test for zero, write (x == 0)." : ""), u->line);
-                    return Ty::Error;
-                }
-                return Ty::Bool;
-            }
-            // unary '-'
-            if (t != Ty::Int) {
+            Ty want = u->op == "!" ? Ty::Bool : Ty::Int;     // ! gives bool; unary - gives int
+            if (!coerce(u->operand, t, want)) {
                 reportTypeError("TypeMismatch",
-                    "Unary '-' needs an int but got " + std::string(tyName(t)) + ".", u->line);
+                    "Operator '" + u->op + "' cannot be applied to a " + std::string(tyName(t)) + ".", u->line);
                 return Ty::Error;
             }
-            return Ty::Int;
+            return want;
         }
         case NodeKind::BinaryOp: return checkBinary(static_cast<BinaryOp*>(expr));
         case NodeKind::Call:     return checkCall(static_cast<Call*>(expr));
-        case NodeKind::Conditional: {
-            auto* c = static_cast<Conditional*>(expr);
-            Ty ct = checkExpr(c->cond.get());
-            Ty a = checkExpr(c->thenExpr.get());
-            Ty b = checkExpr(c->elseExpr.get());
-            if (ct != Ty::Error && ct != Ty::Bool)
-                reportTypeError("ConditionNotBoolean",
-                    "The condition of '?:' must be bool, but it is " + std::string(tyName(ct)) + "." + conditionHint(ct), c->line);
-            if (a == Ty::Error || b == Ty::Error) return Ty::Error;
-            if (a != b) {
-                reportTypeError("TypeMismatch",
-                    "Both results of '?:' must have the same type, not " +
-                    std::string(tyName(a)) + " and " + tyName(b) + ".", c->line);
+        case NodeKind::Cast: {                     // an explicit conversion written in the program
+            auto* c = static_cast<Cast*>(expr);
+            Ty from = checkExpr(c->operand.get());
+            Ty to = tyFromName(c->type);
+            if (from == Ty::Error) return to;
+            bool ok = (to == Ty::String) ? from == Ty::String
+                                         : (from == Ty::Int || from == Ty::Bool);
+            if (!ok) {
+                reportTypeError("TypeMismatch", "Cannot convert " + std::string(tyName(from)) + " to " + c->type + "." +
+                    (to == Ty::String ? " Use to_string(n) to turn a number into text." : ""), c->line);
                 return Ty::Error;
             }
-            return a;
+            return to;
+        }
+        case NodeKind::Conditional: {
+            auto* c = static_cast<Conditional*>(expr);
+            Ty ct = checkCondition(c->cond, "?:", c->line);
+            Ty a = checkExpr(c->thenExpr.get());
+            Ty b = checkExpr(c->elseExpr.get());
+            if (ct == Ty::Error || a == Ty::Error || b == Ty::Error) return Ty::Error;
+            if (a == b) return a;
+            if (coerce(c->thenExpr, a, Ty::Int) && coerce(c->elseExpr, b, Ty::Int)) return Ty::Int;
+            reportTypeError("TypeMismatch",
+                "Both results of '?:' must have compatible types, not " +
+                std::string(tyName(a)) + " and " + tyName(b) + ".", c->line);
+            return Ty::Error;
         }
         default:                 return Ty::Error;
     }
@@ -386,51 +414,49 @@ Ty SemanticAnalyzer::checkBinary(BinaryOp* bin) {
     Ty l = checkExpr(bin->left.get());
     Ty r = checkExpr(bin->right.get());
     if (l == Ty::Error || r == Ty::Error) return Ty::Error;
-
     const std::string& op = bin->op;
+    auto numeric = [](Ty t) { return t == Ty::Int || t == Ty::Bool; };
+    auto mismatch = [&](const std::string& hint) {
+        reportTypeError("TypeMismatch",
+            "Operator '" + op + "' cannot combine " + std::string(tyName(l)) + " and " + tyName(r) + "." + hint,
+            bin->line);
+        return Ty::Error;
+    };
 
-    // '+' : int addition, or string concatenation. With a string on either
-    // side, an int or bool on the other side is joined as text: "n = " + 5.
-    if (op == "+") {
-        if (l == Ty::Int && r == Ty::Int) return Ty::Int;
-        bool textual = (l == Ty::String && r != Ty::Void) || (r == Ty::String && l != Ty::Void);
-        if (textual) return Ty::String;
-        reportTypeError("TypeMismatch",
-            "Operator '+' needs two ints, or a string on one side, not " +
-            std::string(tyName(l)) + " and " + tyName(r) + ".", bin->line);
-        return Ty::Error;
+    // Arithmetic and shifts: ints, with bools promoted to int (true is 1), as in C++.
+    if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "<<" || op == ">>") {
+        if (op == "+" && l == Ty::String && r == Ty::String) return Ty::String;   // joining strings
+        if (numeric(l) && numeric(r)) {
+            coerce(bin->left, l, Ty::Int);
+            coerce(bin->right, r, Ty::Int);
+            return Ty::Int;
+        }
+        if (op == "+" && (l == Ty::String || r == Ty::String))
+            return mismatch(" In C++ this does not join them: adding a number to text moves a pointer into the "
+                            "text instead (clang warns: adding 'int' to a string does not append to the string). "
+                            "Use to_string(n), or write both with cout << ... << n.");
+        return mismatch("");
     }
-    // other arithmetic: int only
-    if (op == "-" || op == "*" || op == "/" || op == "%") {
-        if (l == Ty::Int && r == Ty::Int) return Ty::Int;
-        reportTypeError("TypeMismatch",
-            "Operator '" + op + "' needs two ints, not " +
-            std::string(tyName(l)) + " and " + tyName(r) + ".", bin->line);
-        return Ty::Error;
+    // Comparisons: two numbers (bool promoted to int), or two strings (alphabetical order).
+    if (op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=") {
+        if (l == Ty::String && r == Ty::String) return Ty::Bool;
+        if (numeric(l) && numeric(r)) {
+            // Ordering compares numbers, so bools are promoted to int (true < false
+            // compares 1 < 0). == and != only need converting when the types differ.
+            bool ordering = op == "<" || op == ">" || op == "<=" || op == ">=";
+            if (ordering || l != r) { coerce(bin->left, l, Ty::Int); coerce(bin->right, r, Ty::Int); }
+            return Ty::Bool;
+        }
+        return mismatch("");
     }
-    // ordering comparisons: int only, produce bool
-    if (op == "<" || op == ">" || op == "<=" || op == ">=") {
-        if (l == Ty::Int && r == Ty::Int) return Ty::Bool;
-        reportTypeError("TypeMismatch",
-            "Operator '" + op + "' needs two ints, not " +
-            std::string(tyName(l)) + " and " + tyName(r) + ".", bin->line);
-        return Ty::Error;
-    }
-    // equality: same type on both sides, produce bool
-    if (op == "==" || op == "!=") {
-        if (l == r) return Ty::Bool;
-        reportTypeError("TypeMismatch",
-            "Operator '" + op + "' compares values of the same type, not " +
-            std::string(tyName(l)) + " and " + tyName(r) + ".", bin->line);
-        return Ty::Error;
-    }
-    // boolean logic: bool only
+    // Logic: each side converted to bool (non-zero is true).
     if (op == "&&" || op == "||") {
-        if (l == Ty::Bool && r == Ty::Bool) return Ty::Bool;
-        reportTypeError("TypeMismatch",
-            "Operator '" + op + "' needs two bools, not " +
-            std::string(tyName(l)) + " and " + tyName(r) + ".", bin->line);
-        return Ty::Error;
+        if (numeric(l) && numeric(r)) {
+            coerce(bin->left, l, Ty::Bool);
+            coerce(bin->right, r, Ty::Bool);
+            return Ty::Bool;
+        }
+        return mismatch("");
     }
     return Ty::Error;
 }
@@ -442,6 +468,19 @@ Ty SemanticAnalyzer::checkCall(Call* call) {
     for (auto& a : call->args) argTypes.push_back(checkExpr(a.get()));
 
     auto it = funcs_.find(call->callee);
+    // Built-in to_string(n), from <string>.
+    if (it == funcs_.end() && call->callee == "to_string") {
+        if (argTypes.size() != 1) {
+            reportTypeError("ArgumentCount", "to_string takes exactly one value.", call->line);
+            return Ty::Error;
+        }
+        if (argTypes[0] != Ty::Error && !coerce(call->args[0], argTypes[0], Ty::Int)) {
+            reportTypeError("ArgumentType", "to_string needs a number, not a " +
+                            std::string(tyName(argTypes[0])) + ".", call->line);
+            return Ty::Error;
+        }
+        return Ty::String;
+    }
     if (it == funcs_.end()) {
         std::vector<std::string> names;
         for (const auto& kv : funcs_) names.push_back(kv.first);
@@ -450,7 +489,7 @@ Ty SemanticAnalyzer::checkCall(Call* call) {
         static const char* printLike[] = {"printf", "println", "puts", "printLine", "cout", "echo", "write"};
         bool isPrintLike = false;
         for (const char* p : printLike) if (call->callee == p) isPrintLike = true;
-        if (isPrintLike) msg += " To print in Lucid, use print(...), e.g. print(\"x =\", x);";
+        if (isPrintLike) msg += " To print, use cout, e.g. cout << \"x = \" << x << endl;";
         else if (!hint.empty()) msg += " Did you mean '" + hint + "'?";
         reportTypeError("UndefinedFunction", msg, call->line);
         return Ty::Error;
@@ -464,7 +503,7 @@ Ty SemanticAnalyzer::checkCall(Call* call) {
         return sig.returnType;
     }
     for (size_t i = 0; i < argTypes.size(); ++i) {
-        if (argTypes[i] != Ty::Error && argTypes[i] != sig.paramTypes[i]) {
+        if (argTypes[i] != Ty::Error && !coerce(call->args[i], argTypes[i], sig.paramTypes[i])) {
             reportTypeError("ArgumentType",
                 "Argument " + std::to_string(i + 1) + " of '" + call->callee +
                 "' should be " + tyName(sig.paramTypes[i]) + " but got " +

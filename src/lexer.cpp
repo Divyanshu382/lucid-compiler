@@ -22,6 +22,7 @@ static const std::unordered_map<std::string, TokenType>& keywords() {
         {"false", TokenType::KwFalse},  {"for", TokenType::KwFor},
         {"break", TokenType::KwBreak},   {"continue", TokenType::KwContinue},
         {"do", TokenType::KwDo},         {"void", TokenType::KwVoid},
+        {"const", TokenType::KwConst},
     };
     return kw;
 }
@@ -208,6 +209,30 @@ Token Lexer::makeString() {
     return Token{TokenType::StringLiteral, value, startLine, startCol};
 }
 
+Token Lexer::makeCharLiteral() {
+    int startLine = line_, startCol = col_;
+    advance();  // opening '
+    std::string value;
+    if (peek() == '\\' && !atEnd()) {
+        advance();
+        char esc = atEnd() ? '\0' : advance();
+        switch (esc) {
+            case 'n':  value = "\n"; break;
+            case 't':  value = "\t"; break;
+            case '0':  value = std::string(1, '\0'); break;
+            default:   value = std::string(1, esc); break;   // \' \" \\ and the rest
+        }
+    } else if (!atEnd() && peek() != '\'' && peek() != '\n') {
+        value += advance();
+        while (!atEnd() && (static_cast<unsigned char>(peek()) & 0xC0) == 0x80) value += advance();  // whole UTF-8 char
+    }
+    if (!match('\'')) {
+        errors_.add("lexical", "UnterminatedChar", "Character literal is missing its closing '.",
+                    startLine, startCol, sourceLine(src_, startLine));
+    }
+    return Token{TokenType::StringLiteral, value, startLine, startCol};
+}
+
 Token Lexer::makeNumber(int startLine, int startCol) {
     std::string num;
     while (std::isdigit(static_cast<unsigned char>(peek()))) num += advance();
@@ -233,6 +258,18 @@ std::vector<Token> Lexer::tokenize() {
         int startLine = line_, startCol = col_;
         char c = peek();
 
+        // `std::` names (std::cout, std::string, ...) are the same names
+        // without the prefix: Lucid has a single namespace.
+        if (src_.compare(pos_, 5, "std::") == 0) {
+            for (int i = 0; i < 5; ++i) advance();
+            continue;
+        }
+        // Character literal: 'a', '\n'. Lucid has no char type, so it becomes
+        // a one-character string, which is all `cout << '\n'` needs.
+        if (c == '\'') {
+            tokens.push_back(makeCharLiteral());
+            continue;
+        }
         // Identifiers / keywords
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             tokens.push_back(makeIdentifierOrKeyword(startLine, startCol));
@@ -281,8 +318,16 @@ std::vector<Token> Lexer::tokenize() {
             case ':': emit(TokenType::Colon, ":"); break;
             case '?': emit(TokenType::Question, "?"); break;
             case ',': emit(TokenType::Comma, ","); break;
-            case '<': if (match('=')) emit(TokenType::Le, "<="); else emit(TokenType::Lt, "<"); break;
-            case '>': if (match('=')) emit(TokenType::Ge, ">="); else emit(TokenType::Gt, ">"); break;
+            case '<':
+                if (match('<')) emit(TokenType::LShift, "<<");
+                else if (match('=')) emit(TokenType::Le, "<=");
+                else emit(TokenType::Lt, "<");
+                break;
+            case '>':
+                if (match('>')) emit(TokenType::RShift, ">>");
+                else if (match('=')) emit(TokenType::Ge, ">=");
+                else emit(TokenType::Gt, ">");
+                break;
             case '=': if (match('=')) emit(TokenType::EqEq, "=="); else emit(TokenType::Assign, "="); break;
             case '!': if (match('=')) emit(TokenType::NotEq, "!="); else emit(TokenType::Not, "!"); break;
             case '&':

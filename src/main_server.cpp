@@ -93,9 +93,11 @@ int main(int argc, char** argv) {
 
     // POST /compile { "source": "..." } -> full compiler result JSON.
     server.Post("/compile", [](const httplib::Request& req, httplib::Response& res) {
-        std::string source;
+        std::string source, input;
         try {
-            source = nlohmann::json::parse(req.body).value("source", "");
+            auto body = nlohmann::json::parse(req.body);
+            source = body.value("source", "");
+            input = body.value("stdin", "");             // what cin reads
         } catch (const std::exception&) {
             res.status = 400;
             res.set_content(R"({"error":{"code":400,"message":"Body must be JSON: { \"source\": \"...\" }"}})",
@@ -106,7 +108,7 @@ int main(int argc, char** argv) {
         // deep recursion in the user's program cannot overflow this server
         // thread's small stack. A compiler failure becomes a clean error.
         try {
-            res.set_content(lucid::compileToJsonText(source), "application/json");
+            res.set_content(lucid::compileToJsonText(source, input), "application/json");
         } catch (const std::exception& e) {
             nlohmann::json out = {
                 {"tokens", nlohmann::json::array()}, {"ast", nullptr}, {"symbolTable", nullptr},

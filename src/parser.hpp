@@ -71,6 +71,10 @@ private:
     NodePtr simpleStatement();  // assignment or bare call, starting with an identifier
     NodePtr ifStatement();
     NodePtr doWhileStatement();
+    NodePtr coutStatement();             // cout << a << b << endl;
+    NodePtr cinStatement();              // cin >> a >> b;
+    NodePtr skipUsing();                 // using namespace std;  (nothing to import)
+    std::unique_ptr<Block> bodyBlock();  // { ... } or a single statement, as in C++
     NodePtr breakOrContinue();
     NodePtr cFuncDecl();                 // C-style: int add(int a, int b) { ... }
     NodePtr skipNestedFunction();        // report a function inside a block, skip it whole
@@ -78,7 +82,7 @@ private:
     void parseParams(FuncDecl& fn);      // ( type name, ... )  or  (void)
     std::string returnTypeName();        // a type, or void
     bool isCFuncStart() const;           // type/void IDENT '(' ...
-    NodePtr declarator(const std::string& type);
+    NodePtr declarator(const std::string& type, bool isConst = false);
     static NodePtr defaultValue(const std::string& type, int line);
     NodePtr forStatement();
     NodePtr assignmentNoSemi();   // `x = e` / `x += e` without the trailing ';'
@@ -97,6 +101,7 @@ private:
     NodePtr logicalAnd();
     NodePtr equality();
     NodePtr comparison();
+    NodePtr shift();
     NodePtr term();
     NodePtr factor();
     NodePtr unary();

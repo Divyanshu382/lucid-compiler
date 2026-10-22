@@ -1,0 +1,6 @@
+// expect-exit: 0
+// expect-output: 3.14 is not an int: 3
+// expect-errors: 
+const int PI_ISH = 3;
+const string WHY = "3.14 is not an int: ";
+cout << WHY << PI_ISH << endl;

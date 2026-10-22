@@ -1,0 +1,7 @@
+// expect-exit: 0
+// expect-output: 0|1|1|1
+// expect-errors: 
+cout << (true < false) << endl;      // bools compare as 1 and 0, as in C++
+cout << (false < true) << endl;
+cout << (true >= true) << endl;
+cout << (true == 1) << endl;

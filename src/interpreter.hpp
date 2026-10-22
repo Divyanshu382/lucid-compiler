@@ -12,6 +12,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <functional>
 #include <variant>
 #include <vector>
 #include "ast.hpp"
@@ -25,7 +26,12 @@ std::string valueToString(const Value& v);
 
 class Interpreter {
 public:
-    Interpreter(const std::string& source, ErrorList& errors);
+    // `input` is what cin reads: whitespace-separated values. When it runs
+    // out, `moreInput` (if given) is asked for more, e.g. the next line typed
+    // in a terminal; it returns false at end of input.
+    using InputSource = std::function<bool(std::string&)>;
+    Interpreter(const std::string& source, ErrorList& errors, const std::string& input = "",
+                InputSource moreInput = nullptr);
 
     // Run the program. Returns everything print() emitted, in order.
     std::vector<std::string> run(Program& program);
@@ -46,6 +52,12 @@ private:
     std::vector<Scope> scopes_;
     std::unordered_map<std::string, FuncDecl*> funcs_;
     std::vector<std::string> output_;
+    std::string pendingLine_;          // cout text not yet ended by a newline
+    void write(const std::string& text);   // append to the output, splitting lines at '\n'
+    std::string input_;                // the program's standard input
+    size_t inputPos_ = 0;
+    InputSource moreInput_;
+    bool readToken(std::string& out);
     int callDepth_ = 0;
     static constexpr int kMaxCallDepth = 10000;   // safe on the 256 MB stack (bigstack.hpp)
 

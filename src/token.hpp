@@ -23,7 +23,7 @@ enum class TokenType {
     KwIf, KwElse, KwWhile,
     KwPrint, KwFunc, KwReturn,
     KwTrue, KwFalse, KwFor,
-    KwBreak, KwContinue, KwDo, KwVoid,
+    KwBreak, KwContinue, KwDo, KwVoid, KwConst,
 
     // Operators
     Plus, Minus, Star, Slash, Percent,   // + - * / %
@@ -33,6 +33,7 @@ enum class TokenType {
     PlusAssign, MinusAssign, StarAssign, SlashAssign, PercentAssign,  // += -= *= /= %=
     PlusPlus, MinusMinus,                // ++ --
     Question,                            // ? (in a ? b : c)
+    LShift, RShift,                      // << >>  (also cout << / cin >>)
 
     // Punctuation
     LBrace, RBrace,                      // { }
@@ -89,6 +90,9 @@ inline const char* tokenTypeName(TokenType t) {
         case TokenType::KwContinue:    return "Keyword(continue)";
         case TokenType::KwDo:          return "Keyword(do)";
         case TokenType::KwVoid:        return "Keyword(void)";
+        case TokenType::KwConst:       return "Keyword(const)";
+        case TokenType::LShift:        return "LShift";
+        case TokenType::RShift:        return "RShift";
         case TokenType::Question:      return "Question";
         case TokenType::PlusAssign:    return "PlusAssign";
         case TokenType::MinusAssign:   return "MinusAssign";
@@ -128,6 +132,8 @@ inline std::string tokenTypeLexeme(TokenType t) {
         case TokenType::PercentAssign: return "%=";
         case TokenType::PlusPlus:      return "++";
         case TokenType::Question:      return "?";
+        case TokenType::LShift:        return "<<";
+        case TokenType::RShift:        return ">>";
         case TokenType::MinusMinus:    return "--";
         default:                   return tokenTypeName(t);
     }

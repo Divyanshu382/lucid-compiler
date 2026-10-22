@@ -1,8 +1,0 @@
-// expect-exit: 1
-// expect-output: 
-// expect-errors: semantic:UndeclaredVariable
-int limit = 10;
-func f(int n): int {
-    return n + limit;
-}
-print(f(1));

@@ -3,64 +3,103 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lucid — Live Compiler Playground</title>
+  <title>Lucid Compiler Workbench</title>
+  <link rel="stylesheet" href="fonts/fonts.css">
   <link rel="stylesheet" href="style.css">
+  <script>
+    // Apply a saved theme before first paint, so the page never flashes.
+    try { const t = localStorage.getItem("lucid_theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="logo">◆</span>
-      <div>
-        <h1>Lucid</h1>
-        <p>a small statically-typed language &mdash; compiled live in C++</p>
-      </div>
+      <span class="wordmark">lucid</span>
+      <span class="brand-sub">compiler workbench</span>
     </div>
-    <div class="pipeline">
-      <span class="phase" data-phase="lexical">Lexer</span><i>›</i>
-      <span class="phase" data-phase="syntax">Parser</span><i>›</i>
-      <span class="phase" data-phase="semantic">Semantic</span><i>›</i>
-      <span class="phase" data-phase="optimizer">Optimizer</span><i>›</i>
-      <span class="phase" data-phase="ircode">IR Code</span><i>›</i>
-      <span class="phase" data-phase="runtime">Interpreter</span>
+    <div class="topbar-right">
+      <span id="summary" class="summary"></span>
+      <button id="themeBtn" class="text-btn" type="button" title="Switch between light and dark">Dark</button>
     </div>
   </header>
 
   <main class="workspace">
-    <!-- LEFT: editor -->
-    <section class="editor-pane">
+    <!-- LEFT: the program, what it printed, and any problems -->
+    <section class="source-col" aria-label="Source program">
       <div class="toolbar">
+        <label class="field-cap io-label" for="examples">Input</label>
         <select id="examples" title="Load an example program"></select>
-        <button id="runBtn" class="primary">Run ▶</button>
-        <span id="statusPill" class="pill">ready</span>
+        <span id="statusPill" class="status">ready</span>
+        <button id="runBtn" class="primary" type="button" title="Compile and run (also happens as you type)">Run</button>
       </div>
+
       <div class="editor-wrap">
-        <div id="gutter" class="gutter"></div>
+        <div id="gutter" class="gutter" aria-hidden="true"></div>
         <textarea id="editor" spellcheck="false" autocomplete="off"
-                  autocorrect="off" autocapitalize="off"></textarea>
+                  autocorrect="off" autocapitalize="off" aria-label="Lucid source code"></textarea>
       </div>
-      <div class="ai-bar">
-        <input id="apiKey" type="password" placeholder="Gemini API key (optional — enables AI)">
-        <button id="writeCodeBtn" class="ghost" title="Describe a program in English; Gemini writes it and the compiler checks it">✨ Write code</button>
-        <button id="explainProgramBtn" class="ghost" title="Ask Gemini to explain what this program does">Explain program</button>
+
+      <section class="stdin" id="stdinPane" hidden aria-label="Program input for cin">
+        <label class="io-label stdin-label" for="stdinBox">Stdin</label>
+        <textarea id="stdinBox" rows="1" spellcheck="false" autocomplete="off"
+                  placeholder="Values for cin, separated by spaces or new lines"></textarea>
+      </section>
+
+      <div class="resizer" data-target="outputPane" role="separator" aria-orientation="horizontal"
+           tabindex="0" aria-label="Resize the output (drag, or use the arrow keys; double-click to reset)"></div>
+      <section class="console" id="outputPane" aria-label="Program output">
+        <div class="section-head">
+          <span class="io-label">Output</span><span id="outputTitle" class="console-meta"></span>
+        </div>
+        <div id="outputList" class="console-body"></div>
+      </section>
+
+      <div class="resizer" data-target="errorsPane" role="separator" aria-orientation="horizontal"
+           tabindex="0" aria-label="Resize the problems list (drag, or use the arrow keys; double-click to reset)"></div>
+      <section class="problems" id="errorsPane" aria-label="Problems">
+        <div class="section-head">
+          <span id="errorsTitle">Problems</span>
+        </div>
+        <div id="errorsList" class="problems-list"></div>
+      </section>
+
+      <div class="assistant">
+        <span class="field-cap">Assistant</span>
+        <input id="apiKey" type="password" placeholder="Gemini API key (optional)" aria-label="Gemini API key">
+        <button id="explainProgramBtn" class="text-btn" type="button" title="Ask Gemini to explain what this program does">Explain program</button>
+        <button id="writeCodeBtn" class="text-btn" type="button" title="Describe a program in English; Gemini writes it and the compiler checks it">Write from description</button>
       </div>
     </section>
 
-    <!-- RIGHT: results -->
-    <section class="results-pane">
-      <nav class="tabs">
-        <button class="tab active" data-tab="tokens">Tokens</button>
-        <button class="tab" data-tab="ast">AST</button>
-        <button class="tab" data-tab="symbols">Symbol Table</button>
-        <button class="tab" data-tab="output">Output</button>
-        <button class="tab" data-tab="optimizer">Optimizer</button>
-        <button class="tab" data-tab="ir">IR Code</button>
-        <button class="tab" data-tab="perf">Performance</button>
+    <!-- RIGHT: the compiler pipeline -->
+    <section class="inspect-col" aria-label="Compiler phases">
+      <nav class="rail" aria-label="Compiler phases">
+        <button class="tab stage" data-tab="tokens" data-phase="lexical" type="button">
+          <span class="stage-num">01</span><span class="stage-name">Lexer</span><span class="stage-metric" id="m-tokens">–</span>
+        </button>
+        <button class="tab stage" data-tab="ast" data-phase="syntax" type="button">
+          <span class="stage-num">02</span><span class="stage-name">Parser</span><span class="stage-metric" id="m-ast">–</span>
+        </button>
+        <button class="tab stage" data-tab="symbols" data-phase="semantic" type="button">
+          <span class="stage-num">03</span><span class="stage-name">Semantic</span><span class="stage-metric" id="m-symbols">–</span>
+        </button>
+        <button class="tab stage" data-tab="optimizer" data-phase="optimizer" type="button">
+          <span class="stage-num">04</span><span class="stage-name">Optimizer</span><span class="stage-metric" id="m-optimizer">–</span>
+        </button>
+        <button class="tab stage" data-tab="ir" data-phase="ircode" type="button">
+          <span class="stage-num">05</span><span class="stage-name">IR</span><span class="stage-metric" id="m-ir">–</span>
+        </button>
+        <button class="tab stage" data-tab="output" data-phase="runtime" type="button" title="The program's output is shown under the editor">
+          <span class="stage-num">06</span><span class="stage-name">Run</span><span class="stage-metric" id="m-output">–</span>
+        </button>
+        <button class="tab stage stage-aside" data-tab="perf" type="button">
+          <span class="stage-num">&nbsp;</span><span class="stage-name">Timing</span><span class="stage-metric" id="m-perf">–</span>
+        </button>
       </nav>
       <div class="panels">
         <div class="panel active" id="panel-tokens"></div>
         <div class="panel" id="panel-ast"></div>
         <div class="panel" id="panel-symbols"></div>
-        <div class="panel" id="panel-output"></div>
         <div class="panel" id="panel-optimizer"></div>
         <div class="panel" id="panel-ir"></div>
         <div class="panel" id="panel-perf"></div>
@@ -68,20 +107,12 @@
     </section>
   </main>
 
-  <!-- BOTTOM: errors -->
-  <section class="errors-pane" id="errorsPane">
-    <div class="errors-head">
-      <span id="errorsTitle">Errors</span>
-    </div>
-    <div id="errorsList" class="errors-list"></div>
-  </section>
-
-  <!-- AI modal -->
+  <!-- AI dialog -->
   <div class="modal-backdrop" id="aiModal" hidden>
-    <div class="modal">
+    <div class="modal" role="dialog" aria-labelledby="aiTitle">
       <div class="modal-head">
-        <span id="aiTitle">AI Assistant</span>
-        <button id="aiClose" class="icon-btn">✕</button>
+        <span id="aiTitle">Assistant</span>
+        <button id="aiClose" class="text-btn" type="button" aria-label="Close">Close</button>
       </div>
       <div class="modal-body" id="aiBody"></div>
     </div>

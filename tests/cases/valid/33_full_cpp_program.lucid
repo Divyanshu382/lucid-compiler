@@ -1,0 +1,28 @@
+// expect-exit: 0
+// expect-output: Hello, Ritu!|1 squared is 1|2 is even|3 squared is 9|total = 6, calls = 2
+// expect-errors: 
+// stdin: Ritu 3
+#include <iostream>
+#include <string>
+using namespace std;
+
+int calls = 0;
+
+int square(int n) {
+    calls++;
+    return n * n;
+}
+
+int main() {
+    string name;
+    int n;
+    cin >> name >> n;
+    cout << "Hello, " << name << "!" << endl;
+    for (int i = 1; i <= n; i++)
+        if (i % 2) cout << i << " squared is " << square(i) << '\n';
+        else cout << i << " is even\n";
+    int total = 0;
+    while (n) { total += n; n--; }
+    cout << "total = " << total << ", calls = " << calls << endl;
+    return 0;
+}

@@ -44,82 +44,69 @@ Two executables share the same compiler core:
 
 ---
 
-## The Lucid language
+## The language: a subset of C++
 
-Statically typed. Three types: `int`, `string`, `bool`.
+Lucid compiles a subset of C++, so ordinary first-course C++ programs run
+unchanged:
 
-```lucid
-int x = 5;
-string name = "Divyanshu";
-bool ready = true;
+```cpp
+#include <iostream>
+#include <string>
+using namespace std;
 
-x = x + 10;
+const int LIMIT = 3;
+int calls = 0;                       // globals are visible in functions
 
-if (x > 10) {
-    print("big");
-} else {
-    print("small");
+int square(int n) {
+    calls++;
+    return n * n;
 }
 
-int i = 0;
-while (i < 5) {
-    print(i);
-    i = i + 1;
-}
-
-func add(int a, int b): int {
-    return a + b;
-}
-
-print(add(3, 4));
-
-int total = 0;
-for (int k = 1; k <= 10; k += 1) {
-    total += k;
-}
-
-if (total > 50) {
-    print("big");
-} else if (total > 20) {
-    print("medium");
-} else {
-    print("small");
+int main() {
+    string name;
+    int n;
+    cin >> name >> n;                // input comes from the STDIN box / stdin
+    cout << "Hello, " << name << "!" << endl;
+    for (int i = 1; i <= n; i++)
+        if (i % 2) cout << i << " squared is " << square(i) << '\n';
+        else       cout << i << " is even" << endl;
+    cout << "calls: " << calls << endl;
+    return 0;
 }
 ```
 
-**Features:** typed variable declarations (with or without an initial value,
-several per line), assignment, compound assignment (`+= -= *= /= %=`),
-increment / decrement (`x++ ++x x-- --x`), arithmetic (`+ - * / %`),
-comparison (`< > <= >= == !=`), boolean logic (`&& || !`), the conditional
-expression `c ? a : b`, `if` / `else if` / `else`, `while`, `do … while`,
-`for`, `break`, `continue`, `print` with any number of values, recursive
-functions (`func f(int a): int` or C-style `int f(int a)`), `void` functions,
-and `//` and `/* */` comments.
+**Supported:** `int`, `bool`, `string` (with `std::`), `const`; declarations
+with or without a value and several per line; `cout << … << endl`, `'\n'`,
+`cin >> …`; `if` / `else if` / `else`, `while`, `do … while`, `for`, `break`,
+`continue`, `return`, with or without braces around single statements;
+`+ - * / %`, `<< >>` shifts, comparisons (also on two strings), `&& || !`,
+`?:`, `= += -= *= /= %=`, `x++ ++x x-- --x` as statements; casts `int(x)`,
+`(int)x`, `static_cast<int>(x)`; `to_string(n)`; functions (including `void`,
+recursion and prototypes); `#include` and `using namespace std;` are accepted
+and ignored. A parameterless `main()` runs automatically.
 
-**C-style programs work as written:** function prototypes are accepted, a
-parameterless `main()` runs automatically when there is no other top-level
-code, and `printf` gets a pointer to `print`. Code pasted from PDFs, Word or
-chat apps also works: invisible special spaces count as spaces, curly quotes as
-`"`, and look-alike symbols (`–`, `≤`, `×`) get a "did you mean" message.
+**C++ rules followed:** ints and bools convert to each other (`if (n)`,
+`while (n)`, `!n`, `true + 1`); integer `/` and `%` truncate toward zero;
+`&&` and `||` short-circuit; a function sees the globals declared above it;
+a bool printed with `cout` shows `1` or `0`. Results were checked against
+clang++ on thousands of generated expressions and on whole programs.
 
-Most of this is **syntactic sugar** handled in the parser: `for` becomes a
-`while` with an update step, `else if` an `if` inside the `else` block,
-`x += e` and `x++` become `x = x + …`, and `int a, b;` becomes two
-declarations. `break`, `continue`, `do … while` and `?:` are real language
-features carried through every phase.
+**Where Lucid is stricter than C++, on purpose:** `"text" + n` is an error
+(in C++ it silently moves a pointer, and clang warns about it), integer
+overflow and division by zero are reported as runtime errors (undefined
+behaviour in C++), and a string cannot be used as a condition.
 
-**Type rules (crisp, for the viva):**
-- `+` works on two `int`s (addition), or joins text when either side is a
-  `string` (`"n = " + 5` gives `"n = 5"`).
-- `- * / %` require two `int`s.
-- `< > <= >=` require two `int`s and produce `bool`.
-- `== !=` compare two values **of the same type** and produce `bool`.
-- `&& || !` operate on `bool`.
-- `if`/`while`/`do`/`?:` conditions must be `bool`.
-- `break` and `continue` only inside loops; a `void` function returns no value.
-- Functions run in an **isolated scope**: only their parameters (and other
-  functions) are visible — never globals. The type checker and interpreter agree
-  on this, so a program that type-checks won't hit a surprise at runtime.
+**Not supported:** `double`, `char` variables, arrays and `vector`,
+pointers and references, `struct` / `class`, templates, `++` inside a larger
+expression, `switch`. Lucid's original `print(a, b)` and `func f(): int`
+syntax still work.
+
+Most of the convenience syntax is **sugar** handled in the parser (`for`
+becomes a `while` with an update step, `x += e` and `x++` become
+`x = x + …`, `int a, b;` becomes two declarations). C++'s implicit
+int/bool conversions are made **explicit by the semantic analyser**, which
+inserts `(int)` / `(bool)` cast nodes into the tree, so later phases never
+see mixed types; the casts are visible in the syntax tree and the IR.
 
 ---
 
@@ -193,6 +180,8 @@ key's quota, so do not expose the server to the internet.
 
 ```bash
 ./build/lucidc examples/valid.lucid
+./build/lucidc program.cpp input.txt     # input.txt is what cin reads
+echo "Ritu 5" | ./build/lucidc program.cpp
 ```
 
 Prints tokens, a readable AST tree, the symbol table, optimizer before/after
@@ -304,16 +293,16 @@ main thread (1 MB).
 
 The AI features are **optional**. Get a free key at
 [Google AI Studio](https://aistudio.google.com/apikey), paste it into the
-**"Gemini API key"** field in the playground (it is kept in your browser's
+**Assistant** field under the editor (it is kept in your browser's
 `localStorage` only — never in this repository), and five features switch on:
 
 | Feature | Where | What it does |
 |---|---|---|
-| **✨ Explain with AI** | on each error | Beginner explanation of the compiler's diagnostic, plus one concrete fix |
-| **🔧 Fix it** | on each error | The auto-fix agent loop (below) |
-| **Explain program** | editor toolbar | Plain-English walkthrough of what the program does |
-| **✨ Write code** | editor toolbar | Describe a program in English; Gemini writes it in Lucid and the compiler checks it. A rejected program goes straight to the auto-fix loop |
-| **✨ Explain this intermediate code** | IR Code tab | Explains how the source became three-address code — what each temporary holds and how the jumps implement `if`/`while`/`for` |
+| **Explain** | on each problem | Beginner explanation of the compiler's diagnostic, plus one concrete fix |
+| **Fix with AI** | on each problem | The auto-fix agent loop (below) |
+| **Explain program** | Assistant bar, under the editor | Plain-English walkthrough of what the program does |
+| **Write from description** | Assistant bar, under the editor | Describe a program in English; Gemini writes it in Lucid and the compiler checks it. A rejected program goes straight to the auto-fix loop |
+| **Explain this code with AI** | IR phase | Explains how the source became three-address code — what each temporary holds and how the jumps implement `if`/`while`/`for` |
 
 **The authority rule.** The AI is never part of the compiler: it never parses,
 type-checks, or decides whether a program is correct. It may explain, and it
@@ -332,7 +321,7 @@ model answered and how long it took.
 
 ### The auto-fix loop (the "agent")
 
-**🔧 Fix it** runs a real *perceive → act → observe* cycle: send the broken code
+**Fix with AI** runs a real *perceive → act → observe* cycle: send the broken code
 + the compiler's error to Gemini, get corrected source, **re-POST it to
 `/compile`**, and repeat up to 3 times until it compiles or the limit is hit.
 Every attempt is shown. The compiler — not the model — decides success.

@@ -8,6 +8,7 @@ what the compiler must do:
     // expect-exit: 0                     process exit code (0 ok, 1 errors)
     // expect-output: 15 | B              printed lines, separated by '|'
     // expect-errors: semantic:TypeMismatch | syntax:UnexpectedToken
+    // stdin: 3 4                         optional: what cin reads (\n allowed)
 
 Use `expect-output: *` when the printed output should not be compared (for
 example a program that prints until it is stopped).
@@ -31,16 +32,17 @@ ERROR_LINE = re.compile(r"^\s*\[(\w+)\]\s+(\w+)\s+\(line")
 
 def expectations(path):
     exp = {}
-    for line in path.read_text().splitlines()[:3]:
-        m = re.match(r"//\s*expect-(\w+):\s*(.*)$", line)
+    for line in path.read_text().splitlines()[:4]:
+        m = re.match(r"//\s*(?:expect-)?(\w+):\s*(.*)$", line)
         if m:
             exp[m.group(1)] = m.group(2).strip()
     split = lambda s: [x.strip() for x in s.split("|")] if s else []
-    return int(exp.get("exit", "0")), split(exp.get("output", "")), split(exp.get("errors", ""))
+    return int(exp.get("exit", "0")), split(exp.get("output", "")), split(exp.get("errors", "")), \
+           exp.get("stdin", "").replace("\\n", "\n")
 
 
-def run_compiler(path):
-    proc = subprocess.run([str(LUCIDC), str(path)], capture_output=True, text=True, timeout=20)
+def run_compiler(path, stdin=""):
+    proc = subprocess.run([str(LUCIDC), str(path)], input=stdin, capture_output=True, text=True, timeout=20)
     lines = proc.stdout.splitlines()
     output, errors, section = [], [], None
     for line in lines:
@@ -66,8 +68,9 @@ def main():
     start = time.perf_counter()
 
     for path in cases:
-        want = expectations(path)
-        got = run_compiler(path)
+        *want, stdin = expectations(path)
+        want = tuple(want)
+        got = run_compiler(path, stdin)
         if want[1] == ["*"]:                      # output deliberately unchecked
             want = (want[0], got[1], want[2])
         group = path.parent.name

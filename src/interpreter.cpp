@@ -5,6 +5,9 @@
 #include "interpreter.hpp"
 #include "intmath.hpp"
 
+#include <cctype>
+#include <climits>
+
 namespace lucid {
 
 std::string valueToString(const Value& v) {
@@ -17,8 +20,37 @@ int Interpreter::asInt(const Value& v) { return std::get<int>(v); }
 bool Interpreter::asBool(const Value& v) { return std::get<bool>(v); }
 const std::string& Interpreter::asStr(const Value& v) { return std::get<std::string>(v); }
 
-Interpreter::Interpreter(const std::string& source, ErrorList& errors)
-    : source_(source), errors_(errors) {}
+Interpreter::Interpreter(const std::string& source, ErrorList& errors, const std::string& input,
+                         InputSource moreInput)
+    : source_(source), errors_(errors), input_(input), moreInput_(std::move(moreInput)) {}
+
+// Output is a stream of text, as in C++: cout writes pieces, '\n' ends a line.
+void Interpreter::write(const std::string& text) {
+    for (char c : text) {
+        if (c != '\n') { pendingLine_ += c; continue; }
+        if (output_.size() >= kMaxOutputLines)
+            throw RuntimeFault{ "Output limit reached (10,000 lines). Is a loop printing forever?", 0 };
+        output_.push_back(std::move(pendingLine_));
+        pendingLine_.clear();
+    }
+}
+
+// The next whitespace-separated word of the input, as `cin >>` reads it.
+// Input is only requested when a cin actually needs it, as in C++.
+bool Interpreter::readToken(std::string& out) {
+    for (;;) {
+        while (inputPos_ < input_.size() && std::isspace(static_cast<unsigned char>(input_[inputPos_]))) ++inputPos_;
+        if (inputPos_ < input_.size()) break;
+        std::string more;
+        if (!moreInput_ || !moreInput_(more)) return false;
+        input_ += more;
+        input_ += '\n';
+    }
+    size_t start = inputPos_;
+    while (inputPos_ < input_.size() && !std::isspace(static_cast<unsigned char>(input_[inputPos_]))) ++inputPos_;
+    out = input_.substr(start, inputPos_ - start);
+    return true;
+}
 
 void Interpreter::define(const std::string& name, const Value& v) {
     scopes_.back()[name] = v;
@@ -48,6 +80,8 @@ void Interpreter::spendStep(int line) {
 
 std::vector<std::string> Interpreter::run(Program& program) {
     output_.clear();
+    pendingLine_.clear();
+    inputPos_ = 0;
     outputBytes_ = 0;
     steps_ = 0;
     callDepth_ = 0;
@@ -78,6 +112,10 @@ std::vector<std::string> Interpreter::run(Program& program) {
                     "A value had an unexpected type while running. Please report this program.", 0, 0, "");
     } catch (const ReturnSignal&) {
         // A stray top-level return — semantic analysis already flagged it.
+    }
+    if (!pendingLine_.empty()) {             // text after the last newline
+        output_.push_back(std::move(pendingLine_));
+        pendingLine_.clear();
     }
     return output_;
 }
@@ -129,17 +167,43 @@ void Interpreter::execStatement(Node* stmt) {
         case NodeKind::Continue: throw ContinueSignal{};
         case NodeKind::Print: {
             auto* p = static_cast<Print*>(stmt);
-            if (output_.size() >= kMaxOutputLines)
-                throw RuntimeFault{ "Output limit reached (10,000 lines). Is a loop printing forever?", p->line };
-            std::string line;   // print(a, b, c): one line, values separated by spaces
+            std::string text;
             for (size_t i = 0; i < p->args.size(); ++i) {
-                if (i) line += ' ';
-                line += valueToString(evalExpr(p->args[i].get()));
+                Value v = evalExpr(p->args[i].get());
+                if (p->stream) {
+                    // cout writes each value exactly; a bool prints as 1 or 0, as in C++.
+                    text += std::holds_alternative<bool>(v) ? (std::get<bool>(v) ? "1" : "0") : valueToString(v);
+                } else {
+                    if (i) text += ' ';            // print(a, b): spaces between, then a newline
+                    text += valueToString(v);
+                }
             }
-            outputBytes_ += line.size() + 1;
+            if (!p->stream) text += '\n';
+            outputBytes_ += text.size();
             if (outputBytes_ > kMaxOutputBytes)
                 throw RuntimeFault{ "Output limit reached (2 MB of text). Is a loop printing forever?", p->line };
-            output_.push_back(line);
+            try { write(text); }
+            catch (RuntimeFault& f) { f.line = p->line; throw; }
+            break;
+        }
+        case NodeKind::Read: {
+            auto* rd = static_cast<Read*>(stmt);
+            for (const auto& name : rd->names) {
+                Value current;
+                lookup(name, current);
+                std::string word;
+                if (!readToken(word))
+                    throw RuntimeFault{ "cin >> " + name + ": the input ran out. Type the program's input "
+                                        "in the input box (one value per word).", rd->line };
+                if (std::holds_alternative<std::string>(current)) { assign(name, Value{ word }); continue; }
+                // int (and bool, read as 0 / 1 as C++ does)
+                char* end = nullptr;
+                long long n = std::strtoll(word.c_str(), &end, 10);
+                if (word.empty() || *end != '\0' || n < INT_MIN || n > INT_MAX)
+                    throw RuntimeFault{ "cin >> " + name + ": expected a whole number but the input has '" + word + "'.", rd->line };
+                if (std::holds_alternative<bool>(current)) assign(name, Value{ n != 0 });
+                else assign(name, Value{ static_cast<int>(n) });
+            }
             break;
         }
         case NodeKind::Return: {
@@ -188,6 +252,14 @@ Value Interpreter::evalExpr(Node* expr) {
             return asBool(evalExpr(c->cond.get())) ? evalExpr(c->thenExpr.get())
                                                    : evalExpr(c->elseExpr.get());
         }
+        case NodeKind::Cast: {                       // inserted by the semantic analyser
+            auto* c = static_cast<Cast*>(expr);
+            Value v = evalExpr(c->operand.get());
+            if (c->type == "string") return v;       // string(s): already a string
+            int n = std::holds_alternative<bool>(v) ? (std::get<bool>(v) ? 1 : 0) : std::get<int>(v);
+            if (c->type == "bool") return Value{ n != 0 };
+            return Value{ n };
+        }
         default:
             throw RuntimeFault{ "Cannot evaluate expression.", expr->line };
     }
@@ -221,6 +293,17 @@ Value Interpreter::evalBinary(BinaryOp* bin) {
 
     // Integer arithmetic, checked: overflow is a runtime error, never
     // undefined behaviour (see intmath.hpp).
+    if (op == "<<" || op == ">>") {
+        int a = asInt(l), b = asInt(r);
+        if (b < 0 || b > 31)
+            throw RuntimeFault{ "Shift by " + std::to_string(b) + " bits: the shift must be between 0 and 31.", bin->line };
+        if (op == ">>") return Value{ a >> b };
+        long long shifted = static_cast<long long>(a) * (1LL << b);
+        if (a < 0 || !fitsInt(shifted))
+            throw RuntimeFault{ "Integer overflow: " + std::to_string(a) + " << " + std::to_string(b) +
+                                " does not fit in an int.", bin->line };
+        return Value{ static_cast<int>(shifted) };
+    }
     if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
         int a = asInt(l), b = asInt(r), out = 0;
         bool ok = true;
@@ -238,6 +321,13 @@ Value Interpreter::evalBinary(BinaryOp* bin) {
                                 "(range -2147483648 to 2147483647).", bin->line };
         return Value{ out };
     }
+    if (std::holds_alternative<std::string>(l)) {          // std::string comparison
+        const std::string &a = asStr(l), &b = asStr(r);
+        if (op == "<")  return Value{ a <  b };
+        if (op == ">")  return Value{ a >  b };
+        if (op == "<=") return Value{ a <= b };
+        if (op == ">=") return Value{ a >= b };
+    }
     if (op == "<")  return Value{ asInt(l) <  asInt(r) };
     if (op == ">")  return Value{ asInt(l) >  asInt(r) };
     if (op == "<=") return Value{ asInt(l) <= asInt(r) };
@@ -250,6 +340,8 @@ Value Interpreter::evalBinary(BinaryOp* bin) {
 
 Value Interpreter::callFunction(Call* call) {
     auto it = funcs_.find(call->callee);
+    if (it == funcs_.end() && call->callee == "to_string")
+        return Value{ std::to_string(asInt(evalExpr(call->args[0].get()))) };
     if (it == funcs_.end())
         throw RuntimeFault{ "Call to undefined function '" + call->callee + "'.", call->line };
     FuncDecl* fn = it->second;
@@ -265,9 +357,11 @@ Value Interpreter::callFunction(Call* call) {
         throw RuntimeFault{ "Call stack overflow: more than 10,000 nested calls (runaway recursion?).", call->line };
     }
 
-    // Functions run in an isolated scope chain: only params are visible.
-    auto savedScopes = std::move(scopes_);
-    scopes_.clear();
+    // A call sees the globals (scopes_[0]) and its own frame, but not the
+    // caller's locals: set the caller's local scopes aside for the call.
+    std::vector<Scope> callerLocals(std::make_move_iterator(scopes_.begin() + 1),
+                                    std::make_move_iterator(scopes_.end()));
+    scopes_.resize(1);
     scopes_.emplace_back();
     for (size_t i = 0; i < fn->params.size() && i < args.size(); ++i)
         define(fn->params[i].name, args[i]);
@@ -281,7 +375,8 @@ Value Interpreter::callFunction(Call* call) {
         returned = true;
     }
 
-    scopes_ = std::move(savedScopes);
+    scopes_.resize(1);
+    for (auto& sc : callerLocals) scopes_.push_back(std::move(sc));
     --callDepth_;
 
     if (returned) return result;

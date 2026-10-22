@@ -1,6 +1,7 @@
 // expect-exit: 1
 // expect-output: 
 // expect-errors: semantic:ConditionNotBoolean
-if (5) {
-    print("x");
+string s = "x";
+if (s) {
+    cout << "yes";
 }

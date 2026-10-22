@@ -132,6 +132,19 @@ NodePtr Optimizer::foldExpr(NodePtr expr) {
         return expr;
     }
 
+    // A conversion of a constant is folded: (int) true -> 1, (bool) 5 -> true.
+    if (expr->kind == NodeKind::Cast) {
+        auto* c = static_cast<Cast*>(expr.get());
+        c->operand = foldExpr(std::move(c->operand));
+        Node* o = c->operand.get();
+        if (c->type == "string") return std::move(c->operand);   // string("abc") is just "abc"
+        if (isInt(o) || isBool(o)) {
+            int n = isInt(o) ? intVal(o) : (boolVal(o) ? 1 : 0);
+            return c->type == "bool" ? makeBool(n != 0, c->line) : makeInt(n, c->line);
+        }
+        return expr;
+    }
+
     // c ? a : b with a constant condition becomes just the chosen branch.
     if (expr->kind == NodeKind::Conditional) {
         auto* c = static_cast<Conditional*>(expr.get());
@@ -171,23 +184,15 @@ NodePtr Optimizer::foldExpr(NodePtr expr) {
         if (op == "*") return checkedMul(a, c, v) ? makeInt(v, line) : std::move(expr);
         if (op == "/") { if (c == 0 || !checkedDiv(a, c, v)) return expr; return makeInt(v, line); }
         if (op == "%") { if (c == 0) return expr; return makeInt(safeMod(a, c), line); }
+        if (op == ">>" && c >= 0 && c <= 31) return makeInt(a >> c, line);
+        if (op == "<<" && c >= 0 && c <= 31 && a >= 0 && fitsInt(static_cast<long long>(a) * (1LL << c)))
+            return makeInt(static_cast<int>(static_cast<long long>(a) * (1LL << c)), line);
         if (op == "<")  return makeBool(a <  c, line);
         if (op == ">")  return makeBool(a >  c, line);
         if (op == "<=") return makeBool(a <= c, line);
         if (op == ">=") return makeBool(a >= c, line);
         if (op == "==") return makeBool(a == c, line);
         if (op == "!=") return makeBool(a != c, line);
-    }
-
-    // A string joined with a literal number or bool: "n = " + 5 -> "n = 5".
-    if (op == "+" && (isStr(L) || isStr(R)) && (isStr(L) || isInt(L) || isBool(L)) &&
-        (isStr(R) || isInt(R) || isBool(R))) {
-        auto text = [](const Node* n) -> std::string {
-            if (isStr(n)) return strVal(n);
-            if (isInt(n)) return std::to_string(intVal(n));
-            return boolVal(n) ? "true" : "false";
-        };
-        return makeStr(text(L) + text(R), line);
     }
 
     // String concatenation / comparison on two string literals.

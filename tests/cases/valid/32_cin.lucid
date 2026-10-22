@@ -1,0 +1,11 @@
+// expect-exit: 0
+// expect-output: Hello Ritu|sum = 12|true
+// expect-errors: 
+// stdin: Ritu 5 7\n1
+string name;
+int a, b;
+bool flag;
+cin >> name >> a >> b >> flag;
+cout << "Hello " << name << endl;
+cout << "sum = " << a + b << endl;
+print(flag);

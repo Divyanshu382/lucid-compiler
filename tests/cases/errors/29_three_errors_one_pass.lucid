@@ -1,6 +1,6 @@
 // expect-exit: 1
 // expect-output: 
-// expect-errors: semantic:TypeMismatch|semantic:TypeMismatch|semantic:TypeMismatch
+// expect-errors: semantic:TypeMismatch | semantic:TypeMismatch | semantic:TypeMismatch
 int x = "hello";
 string s = 5;
-bool b = 3 + 4;
+string t = true;

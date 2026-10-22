@@ -31,27 +31,21 @@ let serverAi = false;
 const aiReady = (apiKey) => !!apiKey || serverAi;
 
 // One description of the language, shared by every prompt that writes code.
-const LUCID_SPEC = `Lucid is a small statically-typed, C-like language.
-- Types: int, string, bool. Declarations: int x = 5;  int y;  (y starts at 0, a
-  string at "", a bool at false)  int a = 1, b = 2;
-- Statements end with ';'. Blocks use { }. Comments: // line   and   /* block */
-- Assignment: x = e;  x += e;  x -= e;  x *= e;  x /= e;  x %= e;  x++;  x--;  ++x;  --x;
-- if (c) { } else if (c) { } else { }      (braces are required)
-- while (c) { }    do { } while (c);    for (int i = 0; i < n; i++) { }
-- break; and continue; inside loops.   Conditional expression: c ? a : b
-- print(a, b, ...) prints the values on one line separated by spaces.
-- "text" + n joins a number or bool onto a string.
-- Functions, either style:
-    func add(int a, int b): int { return a + b; }
-    int add(int a, int b) { return a + b; }
-  void functions return nothing (use plain return;). Recursion is allowed.
-  If a program defines int main() and has no other top-level code, main() runs automatically.
-- IMPORTANT: a function body can only see its own parameters and locals, plus
-  other functions. It can NOT see global variables - pass values in as parameters.
-- Operators: + (int addition or string joining), - * / % on ints,
-  < > <= >= on ints, == != on two values of the same type, && || ! on bools.
-- Conditions must be bool; there is no truthiness (if (n) is an error).
-- No arrays, no char or float types, no input, no printf (use print).`;
+const LUCID_SPEC = `Lucid compiles a subset of C++. Write standard C++ using only these features:
+- #include <iostream> / <string> and using namespace std; (accepted and ignored).
+- Types: int, bool, string (std::string). const is allowed. No double, char, arrays, vectors,
+  pointers, references, structs or classes.
+- Variables: int x = 5;  int y;  int a = 1, b = 2;  Globals are allowed and visible in functions.
+- Output: cout << "x = " << x << endl;  (endl or '\\n' end the line; a bool prints as 1 or 0)
+- Input:  cin >> name >> n;
+- Statements: if / else if / else, while, do-while, for, break, continue, return; braces
+  are optional around single statements, as in C++.
+- Operators: + - * / % (ints), << >> (shifts), < > <= >= == != (ints, or two strings),
+  && || !, ?:, = += -= *= /= %=, ++ and -- as whole statements (x++; not y = x++).
+  ints and bools convert to each other as in C++.
+- Strings: s1 + s2 joins two strings; to join a number use to_string(n).
+- Functions: int add(int a, int b) { return a + b; }  void functions allowed; recursion allowed.
+  Put the program in int main() { ... return 0; }`;
 
 // ---- DOM handles -----------------------------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -85,6 +79,11 @@ editor.addEventListener("keydown", (e) => {
 });
 
 let debounceTimer = null;
+// The STDIN box appears when the program reads with cin (or already has input).
+function updateStdinVisibility() {
+  $("stdinPane").hidden = !(/\bcin\s*>>/.test(editor.value) || $("stdinBox").value.trim());
+}
+
 function scheduleCompile() {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(runCompile, 300);
@@ -98,20 +97,22 @@ async function compileRemote(source) {
   const res = await fetch("/compile", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, stdin: $("stdinBox").value }),
   });
   if (!res.ok) throw new Error("server responded " + res.status);
   return res.json();
 }
 
 async function runCompile() {
+  updateStdinVisibility();
   setStatus("busy", "compiling…");
   try {
     const result = await compileRemote(editor.value);
     lastResult = result;
     renderAll(result);
+    const n = result.errors.length;
     setStatus(result.success ? "ok" : "err",
-              result.success ? "compiled ✓" : (result.errors.length + " error(s)"));
+              result.success ? "compiled" : `${n} problem${n === 1 ? "" : "s"}`);
   } catch (err) {
     setStatus("err", "server offline");
     showServerOffline(err);
@@ -119,7 +120,7 @@ async function runCompile() {
 }
 
 function setStatus(cls, text) {
-  statusPill.className = "pill " + cls;
+  statusPill.className = "status " + cls;
   statusPill.textContent = text;
 }
 
@@ -145,7 +146,7 @@ function renderAll(r) {
   safe(() => renderTokens(r.tokens || []), "tokens");
   safe(() => renderAst(r.ast), "ast");
   safe(() => renderSymbols(r.symbolTable), "symbols");
-  safe(() => renderOutput(r.output || []), "output");
+  safe(() => renderOutput(r.output || [], r), "output");
   safe(() => renderOptimizer(r.optimized), "optimizer");
   safe(() => renderIR(r.ir), "ir");
   safe(() => renderPerf(r.timings, r), "perf");
@@ -153,20 +154,49 @@ function renderAll(r) {
 
 function renderPipeline(r) {
   const order = ["lexical", "syntax", "semantic", "optimizer", "ircode", "runtime"];
-  // find earliest failing phase
+  // The earliest phase that reported an error; phases after it did not run.
   let failIdx = -1;
   for (const e of (r.errors || [])) {
     const idx = order.indexOf(e.phase);
     if (idx !== -1 && (failIdx === -1 || idx < failIdx)) failIdx = idx;
   }
-  document.querySelectorAll(".pipeline .phase").forEach((el) => {
+  document.querySelectorAll(".rail .stage[data-phase]").forEach((el) => {
     const idx = order.indexOf(el.dataset.phase);
     el.classList.remove("ok", "err", "skip");
-    if (failIdx === -1) el.classList.add("ok");
-    else if (idx < failIdx) el.classList.add("ok");
-    else if (idx === failIdx) el.classList.add("err");
-    else el.classList.add("skip");
+    el.classList.add(failIdx === -1 || idx < failIdx ? "ok" : idx === failIdx ? "err" : "skip");
   });
+
+  const tokens = (r.tokens || []).filter((t) => t.type !== "EndOfFile").length;
+  const count = (n) => (n ? 1 + (n.children || []).reduce((s, c) => s + count(c), 0) : 0);
+  const st = r.symbolTable;
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const metric = {
+    "m-tokens":    r.tokens && r.tokens.length ? plural(tokens, "token") : "–",
+    "m-ast":       r.ast ? plural(count(r.ast), "node") : "–",
+    "m-symbols":   st ? plural((st.variables || []).length + (st.functions || []).length, "symbol") : "–",
+    "m-optimizer": r.optimized ? (r.optimized.removed ? `−${r.optimized.removed} nodes` : "no change") : "–",
+    "m-ir":        r.ir ? plural(r.ir.quads, "quad") : "–",
+    "m-output":    r.optimized ? plural((r.output || []).length, "line") : "–",
+    "m-perf":      r.timings ? fmtMicros(r.timings.total) : "–",
+  };
+  for (const [id, text] of Object.entries(metric)) $(id).textContent = text;
+
+  const passed = failIdx === -1 ? 6 : failIdx;
+  $("summary").textContent = `${passed}/6 phases passed` + (r.timings ? ` · ${fmtMicros(r.timings.total)}` : "");
+}
+
+function fmtMicros(us) {
+  return us >= 1000 ? (us / 1000).toFixed(1) + " ms" : Math.round(us) + " µs";
+}
+
+// Token families share the colours of the syntax tree legend.
+function tokenClass(type) {
+  if (type.startsWith("Keyword")) return "tk-kw";
+  if (type === "IntLiteral") return "tk-num";
+  if (type === "StringLiteral") return "tk-str";
+  if (type === "Identifier") return "tk-id";
+  if (/^(Semicolon|Comma|Colon|LParen|RParen|LBrace|RBrace)$/.test(type)) return "tk-punct";
+  return "tk-op";
 }
 
 function renderTokens(tokens) {
@@ -174,45 +204,34 @@ function renderTokens(tokens) {
     .filter((t) => t.type !== "EndOfFile")
     .map((t) => `<tr>
         <td class="pos">${t.line}:${t.col}</td>
-        <td class="type">${escapeHtml(t.type)}</td>
-        <td class="val">${escapeHtml(t.value)}</td>
+        <td class="type ${tokenClass(t.type)}">${escapeHtml(t.type)}</td>
+        <td class="val ${tokenClass(t.type)}">${escapeHtml(t.type === "StringLiteral" ? '"' + t.value + '"' : t.value)}</td>
       </tr>`)
     .join("");
   $("panel-tokens").innerHTML =
     `<div class="tok-count">${tokens.filter(t=>t.type!=="EndOfFile").length} tokens</div>
      <table class="tokens">
-       <thead><tr><th>Pos</th><th>Type</th><th>Value</th></tr></thead>
+       <thead><tr><th>Line:Col</th><th>Token</th><th>Lexeme</th></tr></thead>
        <tbody>${rows}</tbody>
      </table>`;
 }
 
 // ---- graphical AST (SVG) ----
-const KIND_COLORS = {
-  Program:   ["#30363d", "#8b98a9"],
-  Block:     ["#30363d", "#8b98a9"],
-  VarDecl:   ["#3a2c17", "#ffa657"],
-  Assign:    ["#3a2c17", "#ffa657"],
-  If:        ["#3a2c17", "#ffa657"],
-  While:     ["#3a2c17", "#ffa657"],
-  Print:     ["#3a2c17", "#ffa657"],
-  FuncDecl:  ["#3a2c17", "#ffa657"],
-  Return:    ["#3a2c17", "#ffa657"],
-  Break:     ["#3a2c17", "#ffa657"],
-  Continue:  ["#3a2c17", "#ffa657"],
-  Conditional: ["#2a1f3d", "#d2a8ff"],
-  Call:      ["#132a3f", "#6ea8fe"],
-  BinaryOp:  ["#2a1f3d", "#d2a8ff"],
-  UnaryOp:   ["#2a1f3d", "#d2a8ff"],
-  Identifier:["#0f2f24", "#7ee787"],
-  IntLiteral:   ["#12331f", "#56d364"],
-  StringLiteral:["#12331f", "#56d364"],
-  BoolLiteral:  ["#12331f", "#56d364"],
+// Node families for the syntax tree; colours live in style.css so both themes work.
+const KIND_FAMILY = {
+  Program: "box", Block: "box",
+  VarDecl: "stmt", Assign: "stmt", If: "stmt", While: "stmt", Print: "stmt",
+  FuncDecl: "stmt", Return: "stmt", Break: "stmt", Continue: "stmt",
+  Call: "call",
+  BinaryOp: "expr", UnaryOp: "expr", Conditional: "expr",
+  Identifier: "name",
+  IntLiteral: "lit", StringLiteral: "lit", BoolLiteral: "lit",
 };
 
 function renderAst(ast) {
   const panel = $("panel-ast");
   if (!ast) {
-    panel.innerHTML = `<p class="muted">No AST — the lexer or parser stopped early. Fix the errors below.</p>`;
+    panel.innerHTML = `<p class="muted">No syntax tree: the lexer or parser stopped early. Fix the problems listed under the editor.</p>`;
     return;
   }
   // Geometry.
@@ -264,17 +283,20 @@ function renderAst(ast) {
   }
   for (const n of nodes) {
     const { x, y } = px(n);
-    const [fill, stroke] = KIND_COLORS[n.kind] || ["#30363d", "#8b98a9"];
-    svg += `<g class="node"><title>${escapeHtml(n.kind)} — line ${n.line}</title>
-      <rect x="${x - n.w / 2}" y="${y}" width="${n.w}" height="${boxH}" rx="7"
-            fill="${fill}" stroke="${stroke}"/>
-      <text class="label" x="${x}" y="${y + boxH / 2 + 4}" text-anchor="middle"
-            fill="${stroke}">${escapeHtml(trunc(n.label))}</text>
+    const fam = KIND_FAMILY[n.kind] || "box";
+    svg += `<g class="node nk-${fam}"><title>${escapeHtml(n.kind)}, line ${n.line}</title>
+      <rect x="${x - n.w / 2}" y="${y}" width="${n.w}" height="${boxH}" rx="3"/>
+      <text class="label" x="${x}" y="${y + boxH / 2 + 4}" text-anchor="middle">${escapeHtml(trunc(n.label))}</text>
     </g>`;
   }
   svg += `</svg>`;
-  panel.innerHTML = `<div class="ast-hint">Graphical AST — hover a node for its kind &amp; source line. Scroll to pan.</div>
-                     <div id="astSvgWrap">${svg}</div>`;
+  panel.innerHTML = `<div class="legend">
+      <span class="nk-stmt"><i></i>Statement</span><span class="nk-expr"><i></i>Operator</span>
+      <span class="nk-call"><i></i>Call</span><span class="nk-name"><i></i>Name</span>
+      <span class="nk-lit"><i></i>Literal</span>
+    </div>
+    <p class="ast-hint">Abstract syntax tree built by the parser. Hover a node for its kind and source line.</p>
+    <div id="astSvgWrap">${svg}</div>`;
 }
 
 function renderSymbols(st) {
@@ -310,10 +332,17 @@ function renderSymbols(st) {
     </div>`;
 }
 
-function renderOutput(out) {
-  const panel = $("panel-output");
-  if (!out.length) { panel.innerHTML = `<div class="output-box output-empty">(no output)</div>`; return; }
-  panel.innerHTML = `<div class="output-box">${out.map(escapeHtml).join("\n")}</div>`;
+function renderOutput(out, r) {
+  const n = out.length;
+  $("outputTitle").textContent = n ? `${n} line${n === 1 ? "" : "s"}` : "";
+  const list = $("outputList");
+  if (!n) {
+    const ran = r && r.optimized;      // the interpreter only runs when phases 1-5 succeed
+    list.innerHTML = ran ? `<div class="output-empty">The program printed nothing.</div>`
+                         : `<div class="output-empty not-run">Not run: fix the problems below first.</div>`;
+    return;
+  }
+  list.innerHTML = `<div class="output-box">${out.map((l) => `<div class="out-line">${escapeHtml(l) || " "}</div>`).join("")}</div>`;
 }
 
 function renderOptimizer(opt) {
@@ -360,7 +389,7 @@ function renderIR(ir) {
       <div class="metric"><div class="num">${ir.temps}</div><div class="lbl">temporaries</div></div>
       <div class="metric"><div class="num">${ir.labels}</div><div class="lbl">labels</div></div>
     </div>
-    <button id="explainIrBtn" class="ghost ai-inline">✨ Explain this intermediate code with AI</button>
+    <button id="explainIrBtn" class="ghost ai-inline" type="button">Explain this code with AI</button>
     <p class="muted ir-note">Three-address code generated from the optimised tree. Each line has at most one operator;
       <span class="ir-key ir-jump">jumps</span> and <span class="ir-key ir-label">labels</span> implement if, while and for.</p>
     <table class="tokens ir-table">
@@ -410,27 +439,29 @@ function astText(node, prefix = "", last = true, root = true) {
   return line;
 }
 
+const PHASE_TAG = { lexical: "lexer", syntax: "parser", semantic: "semantic", runtime: "runtime", server: "server" };
+
 function renderErrors(errors) {
   const pane = $("errorsPane");
   const list = $("errorsList");
-  $("errorsTitle").textContent = errors.length ? `Errors (${errors.length})` : "Errors";
+  $("errorsTitle").textContent = errors.length ? `Problems · ${errors.length}` : "Problems";
   if (!errors.length) {
-    list.innerHTML = `<div class="no-errors">✓ No errors — the program compiled and ran.</div>`;
+    list.innerHTML = `<div class="no-errors">No problems. The program compiled and ran.</div>`;
     return;
   }
   list.innerHTML = errors.map((e, i) => {
     const runtime = e.phase === "runtime";
     return `<div class="error-item ${runtime ? "runtime" : ""}">
       <div class="error-top">
-        <span class="error-phase">${escapeHtml(e.phase)}</span>
+        <span class="error-phase">${escapeHtml(PHASE_TAG[e.phase] || e.phase)}</span>
         <strong>${escapeHtml(e.type)}</strong>
         <span class="error-loc">line ${e.line}${e.col ? ":" + e.col : ""}</span>
       </div>
       <div class="error-msg">${escapeHtml(e.message)}</div>
       ${e.snippet ? `<div class="error-snip">${escapeHtml(e.snippet)}</div>` : ""}
       <div class="error-actions">
-        <button class="explain" data-idx="${i}">✨ Explain with AI</button>
-        <button class="fix" data-idx="${i}">🔧 Fix it</button>
+        <button class="explain" data-idx="${i}" type="button">Explain</button>
+        <button class="fix" data-idx="${i}" type="button">Fix with AI</button>
       </div>
     </div>`;
   }).join("");
@@ -445,6 +476,12 @@ function renderErrors(errors) {
 // Tabs
 // ===========================================================================
 function activateTab(name) {
+  if (name === "output") {            // the output lives under the editor, not in a panel
+    const pane = $("outputPane");
+    pane.scrollIntoView({ block: "nearest" });
+    pane.classList.remove("flash"); void pane.offsetWidth; pane.classList.add("flash");
+    return;
+  }
   const tab = document.querySelector(`.tab[data-tab="${name}"]`);
   if (!tab) return;
   document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
@@ -581,7 +618,7 @@ function relevantLines(source, line, radius = 3) {
 async function explainError(errorObj) {
   const apiKey = getKey();
   const prompt =
-`You are a friendly teaching assistant for a small language called Lucid.
+`You are a friendly teaching assistant for Lucid, a compiler for a subset of C++.
 A real C++ compiler has ALREADY diagnosed this error — trust it completely and
 do NOT re-diagnose or invent a different error. In 3-4 short sentences, explain
 in plain, beginner-friendly English what this error means and why it happened,
@@ -598,7 +635,7 @@ ${relevantLines(editor.value, errorObj.line)}
 
 Answer with two short sections titled "Explanation:" and "Fix:".`;
 
-  openModal("✨ Explain: " + errorObj.type,
+  openModal("Explain " + errorObj.type,
             `<p><span class="spinner"></span> Asking Gemini…</p>`);
   if (!aiReady(apiKey)) { setModalBody(offlinePayloadView("Explain error", prompt)); return; }
   try {
@@ -612,7 +649,7 @@ Answer with two short sections titled "Explanation:" and "Fix:".`;
 // (2) autoFix -> corrected full source
 async function autoFix(source, errorObj, apiKey) {
   const prompt =
-`You are fixing a program written in "Lucid".
+`You are fixing a C++ program written for the Lucid compiler.
 
 ${LUCID_SPEC}
 
@@ -624,7 +661,7 @@ Here is the full program:
 ----
 ${source}
 ----
-Return ONLY the corrected, complete Lucid program. No explanation, no markdown.`;
+Return ONLY the corrected, complete program. No explanation, no markdown.`;
   const text = await geminiCall(prompt, apiKey);
   return stripFences(text);
 }
@@ -632,9 +669,9 @@ Return ONLY the corrected, complete Lucid program. No explanation, no markdown.`
 // The agent: perceive (error) -> act (ask for fix) -> observe (recompile), x3.
 async function runAutoFix(errorObj) {
   const apiKey = getKey();
-  openModal("🔧 Auto-fix loop", "");
+  openModal("Fix with AI: propose, recompile, repeat", "");
   if (!aiReady(apiKey)) {
-    const prompt = "Fix the Lucid program for: " + errorObj.type + " — " + errorObj.message;
+    const prompt = "Fix the program for: " + errorObj.type + " — " + errorObj.message;
     setModalBody(offlinePayloadView("Auto-fix", prompt));
     return;
   }
@@ -654,7 +691,7 @@ async function runAutoFix(errorObj) {
       corrected = await autoFix(source, currentError, apiKey);
     } catch (e) {
       setModalBody(doneHtml + `<div class="attempt fail">
-        <div class="attempt-head">⚠️ Attempt ${attempt}: AI request failed</div>
+        <div class="attempt-head">Attempt ${attempt}: the AI request failed</div>
         <p class="muted">${escapeHtml(String(e))}</p></div>`);
       return;
     }
@@ -665,7 +702,7 @@ async function runAutoFix(errorObj) {
       result = await compileRemote(corrected);
     } catch (e) {
       setModalBody(doneHtml + `<div class="attempt fail">
-        <div class="attempt-head">⚠️ Attempt ${attempt}: re-compile failed</div>
+        <div class="attempt-head">Attempt ${attempt}: recompiling failed</div>
         <p class="muted">${escapeHtml(String(e))}</p></div>`);
       return;
     }
@@ -673,7 +710,7 @@ async function runAutoFix(errorObj) {
     const ok = result.success;
     const next = result.errors[0] || {};
     doneHtml += `<div class="attempt ${ok ? "ok" : "fail"}">
-      <div class="attempt-head">${ok ? "✅" : "⚠️"} Attempt ${attempt}: ${ok ? "compiles cleanly!" : "still has errors"}</div>
+      <div class="attempt-head">Attempt ${attempt}: ${ok ? "compiles cleanly" : "still has errors"}</div>
       <pre>${escapeHtml(corrected)}</pre>
       ${ok ? `<p class="muted">Applied to the editor.</p>`
            : `<p class="muted">Remaining: <strong>${escapeHtml(next.type || "error")}</strong> — ${escapeHtml(next.message || "")}</p>`}
@@ -685,7 +722,7 @@ async function runAutoFix(errorObj) {
       updateGutter();
       lastResult = result;
       renderAll(result);
-      setStatus("ok", "fixed by AI ✓");
+      setStatus("ok", "fixed by AI");
       return;
     }
     source = corrected;
@@ -699,15 +736,15 @@ async function runAutoFix(errorObj) {
 async function explainProgram() {
   const apiKey = getKey();
   const prompt =
-`Explain, in plain English for a beginner, what this program written in the
-"Lucid" language does step by step. Keep it concise (a short paragraph or a few
+`Explain, in plain English for a beginner, what this C++ program does step by
+step. Keep it concise (a short paragraph or a few
 bullets). Do not rewrite the code.
 
 Program:
 ----
 ${editor.value}
 ----`;
-  openModal("📖 What this program does", `<p><span class="spinner"></span> Asking Gemini…</p>`);
+  openModal("What this program does", `<p><span class="spinner"></span> Asking Gemini…</p>`);
   if (!aiReady(apiKey)) { setModalBody(offlinePayloadView("Explain program", prompt)); return; }
   try {
     const text = await geminiCall(prompt, apiKey);
@@ -726,7 +763,7 @@ async function explainIR() {
   const listing = ir.code.map((q) => `${String(q.n).padStart(3)}  ${q.text}`).join("\n");
   const prompt =
 `You are a teaching assistant for a compiler design course. Below is a program
-in the small language "Lucid" and the three-address code (quadruples) that the
+in C++ (compiled by Lucid, a C++ subset compiler) and the three-address code (quadruples) that the
 compiler generated from it. Explain to a student how the source was translated:
 what the temporaries (t0, t1, ...) hold, and how the labels and jumps (iffalse,
 goto) implement each if, while and for loop. Refer to instruction numbers and
@@ -742,7 +779,7 @@ Three-address code:
 ----
 ${listing}
 ----`;
-  openModal("✨ Explain the intermediate code", `<p><span class="spinner"></span> Asking Gemini…</p>`);
+  openModal("Explain the intermediate code", `<p><span class="spinner"></span> Asking Gemini…</p>`);
   if (!aiReady(apiKey)) { setModalBody(offlinePayloadView("Explain IR", prompt)); return; }
   try {
     const text = await geminiCall(prompt, apiKey);
@@ -757,13 +794,14 @@ ${listing}
 // straight to the auto-fix loop.
 const WRITE_IDEAS = [
   "Print the first 10 Fibonacci numbers",
+  "Read a number n and print its multiplication table",
   "Check whether 97 is a prime number",
   "Print the multiplication table of 7",
   "Add up the even numbers from 1 to 50",
 ];
 
 function openWriteCode() {
-  openModal("✨ Write a program from a description", `
+  openModal("Write a program from a description", `
     <p class="muted">Describe a program in plain English. Gemini writes it in Lucid, then the
       C++ compiler checks it. The AI never decides whether its own code is correct.</p>
     <label class="field-label" for="writeDesc">What should the program do?</label>
@@ -786,14 +824,14 @@ async function writeProgram() {
   if (!desc) { $("writeDesc").focus(); return; }
   const apiKey = getKey();
   const prompt =
-`Write a complete program in the language "Lucid".
+`Write a complete C++ program for the Lucid compiler.
 
 ${LUCID_SPEC}
 
 Task: ${desc}
 
-Use print to show the results. Keep it short and readable, with a comment or two.
-Return ONLY the Lucid program. No explanation, no markdown.`;
+Use cout to show the results. Keep it short and readable, with a comment or two.
+Return ONLY the C++ program. No explanation, no markdown.`;
   const out = $("writeResult");
   if (!aiReady(apiKey)) { out.innerHTML = offlinePayloadView("Write code", prompt); return; }
 
@@ -807,8 +845,8 @@ Return ONLY the Lucid program. No explanation, no markdown.`;
     const result = await compileRemote(code);   // the compiler's verdict, not the model's
     const shown = (result.output || []).slice(0, 8);
     const verdict = result.success
-      ? `<p class="verdict ok">✅ The compiler accepted it. Output: <code>${escapeHtml(shown.join("  ·  "))}${result.output.length > 8 ? "  …" : ""}</code></p>`
-      : `<p class="verdict bad">⚠️ The compiler rejected it — <strong>${escapeHtml(result.errors[0].type)}</strong>
+      ? `<p class="verdict ok">The compiler accepted it. Output: <code>${escapeHtml(shown.join("  ·  "))}${result.output.length > 8 ? "  …" : ""}</code></p>`
+      : `<p class="verdict bad">The compiler rejected it — <strong>${escapeHtml(result.errors[0].type)}</strong>
            (line ${result.errors[0].line}): ${escapeHtml(result.errors[0].message)}</p>`;
     out.innerHTML = `<pre>${escapeHtml(code)}</pre>${verdict}
       <button id="writeUse" class="primary">${result.success ? "Load into editor" : "Load it and fix with AI"}</button>
@@ -818,7 +856,7 @@ Return ONLY the Lucid program. No explanation, no markdown.`;
       updateGutter();
       lastResult = result;
       renderAll(result);
-      if (result.success) { $("aiModal").hidden = true; setStatus("ok", "written by AI ✓"); }
+      if (result.success) { $("aiModal").hidden = true; setStatus("ok", "written by AI"); }
       else runAutoFix(result.errors[0]);
     });
   } catch (e) {
@@ -863,19 +901,88 @@ function renderMarkdownish(text) {
 // ===========================================================================
 function loadExamples() {
   const sel = $("examples");
+  const groups = {};
   window.LUCID_EXAMPLES.forEach((ex, i) => {
+    const name = ex.group || "Programs";
+    if (!groups[name]) { groups[name] = document.createElement("optgroup"); groups[name].label = name; sel.appendChild(groups[name]); }
     const opt = document.createElement("option");
     opt.value = i; opt.textContent = ex.name;
-    sel.appendChild(opt);
+    groups[name].appendChild(opt);
   });
   sel.addEventListener("change", () => {
     editor.value = window.LUCID_EXAMPLES[+sel.value].code;
+    $("stdinBox").value = window.LUCID_EXAMPLES[+sel.value].stdin || "";
     updateGutter();
     runCompile();
   });
 }
 
+// Light / dark. The first click flips whatever is showing now (which may come
+// from the OS setting); the choice is remembered.
+function currentTheme() {
+  const set = document.documentElement.dataset.theme;
+  if (set) return set;
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function syncThemeButton() {
+  $("themeBtn").textContent = currentTheme() === "dark" ? "Light" : "Dark";
+}
+$("themeBtn").addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("lucid_theme", next); } catch (e) {}
+  syncThemeButton();
+});
+syncThemeButton();
+
+// ---- resizable sections ----------------------------------------------------
+// A handle sits above the output and above the problems list. Dragging it
+// sets the height of the section below it; the code editor takes whatever is
+// left. Sizes are remembered; double-click a handle to reset its section.
+const MIN_SECTION = 44, MIN_EDITOR = 120;
+function sizeKey(id) { return "lucid_h_" + id; }
+function setSectionHeight(section, px) {
+  const col = section.parentElement;
+  const editorH = document.querySelector(".editor-wrap").getBoundingClientRect().height;
+  const current = section.getBoundingClientRect().height;
+  const max = current + editorH - MIN_EDITOR;          // never squeeze the editor below its minimum
+  const h = Math.round(Math.max(MIN_SECTION, Math.min(px, max)));
+  section.style.height = h + "px";
+  section.style.maxHeight = "none";
+  try { localStorage.setItem(sizeKey(section.id), h); } catch (e) {}
+}
+document.querySelectorAll(".resizer").forEach((handle) => {
+  const section = $(handle.dataset.target);
+  try { const saved = +localStorage.getItem(sizeKey(section.id)); if (saved) { section.style.height = saved + "px"; section.style.maxHeight = "none"; } } catch (e) {}
+
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const startY = e.clientY, startH = section.getBoundingClientRect().height;
+    handle.classList.add("dragging"); document.body.classList.add("resizing");
+    const move = (ev) => setSectionHeight(section, startH - (ev.clientY - startY));   // drag up = taller
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.classList.remove("dragging"); document.body.classList.remove("resizing");
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up, { once: true });
+    handle.addEventListener("pointercancel", up, { once: true });
+  });
+  handle.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const step = e.shiftKey ? 60 : 20;
+    setSectionHeight(section, section.getBoundingClientRect().height + (e.key === "ArrowUp" ? step : -step));
+  });
+  handle.addEventListener("dblclick", () => {
+    section.style.height = ""; section.style.maxHeight = "";
+    try { localStorage.removeItem(sizeKey(section.id)); } catch (e) {}
+  });
+});
+
 $("runBtn").addEventListener("click", runCompile);
+$("stdinBox").addEventListener("input", scheduleCompile);
 $("explainProgramBtn").addEventListener("click", explainProgram);
 $("writeCodeBtn").addEventListener("click", openWriteCode);
 
@@ -885,7 +992,7 @@ $("writeCodeBtn").addEventListener("click", openWriteCode);
   if (savedKey) $("apiKey").value = savedKey;
   fetch("/ai/status").then((r) => r.json()).then((st) => {
     serverAi = !!st.serverKey;
-    if (serverAi) $("apiKey").placeholder = "AI is on for everyone (server key). Optional: use your own key";
+    if (serverAi) $("apiKey").placeholder = "Using the server\u2019s key";
   }).catch(() => { /* older server without /ai: visitors paste their own key */ });
   const params = new URLSearchParams(location.search);
   const exParam = parseInt(params.get("ex"), 10);
@@ -893,6 +1000,7 @@ $("writeCodeBtn").addEventListener("click", openWriteCode);
   $("examples").value = exIndex;
   // ?code=<base64> lets you share a program as a link; otherwise load an example.
   let initialCode = window.LUCID_EXAMPLES[exIndex].code;
+  $("stdinBox").value = window.LUCID_EXAMPLES[exIndex].stdin || "";
   const codeParam = params.get("code");
   if (codeParam) { try { initialCode = decodeURIComponent(escape(atob(codeParam))); } catch (e) {} }
   editor.value = initialCode;

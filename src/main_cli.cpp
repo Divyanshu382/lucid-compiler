@@ -7,6 +7,14 @@
 // ============================================================================
 #include <fstream>
 #include <cstdio>
+#include <functional>
+#ifdef _WIN32
+#include <io.h>
+#define isatty _isatty
+#define fileno _fileno
+#else
+#include <unistd.h>
+#endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -38,7 +46,8 @@ static int runCli(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);   // the AST tree uses box-drawing characters
 #endif
     if (argc < 2) {
-        std::cerr << "Usage: lucidc <program.lucid>\n";
+        std::cerr << "Usage: lucidc <program> [input-file]\n"
+                     "       lucidc <program> < input.txt     (the input is what cin reads)\n";
         return 2;
     }
 
@@ -51,7 +60,24 @@ static int runCli(int argc, char** argv) {
     buffer << in.rdbuf();
     std::string source = buffer.str();
 
-    json result = lucid::compile(source);
+    // The program's input (what cin reads): a second file argument, or else
+    // standard input. Standard input is read only when the program executes a
+    // cin, a line at a time, so a program without cin never waits for input,
+    // and in a terminal you type the values when they are asked for.
+    std::string input;
+    std::function<bool(std::string&)> moreInput = nullptr;
+    if (argc >= 3) {
+        std::ifstream inFile(argv[2]);
+        if (!inFile) { std::cerr << "error: cannot open input file '" << argv[2] << "'\n"; return 2; }
+        std::stringstream ib; ib << inFile.rdbuf(); input = ib.str();
+    } else {
+        moreInput = [](std::string& line) {
+            if (isatty(fileno(stdin))) { std::cerr << "input> "; std::cerr.flush(); }
+            return static_cast<bool>(std::getline(std::cin, line));
+        };
+    }
+
+    json result = lucid::compile(source, input, moreInput);
 
     std::cout << "=== Lucid ===  " << argv[1] << "\n\n";
 
